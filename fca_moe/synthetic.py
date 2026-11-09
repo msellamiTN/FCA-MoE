@@ -1,7 +1,8 @@
 """Controlled synthetic routing workloads for FCA-MoE v0.2.
 
-Positive control: fixed overlapping community per execution window.
-Negative control: IID token-wise sampling from the same route-pair vocabulary.
+The positive control has persistent window-level expert communities. The IID
+negative control permutes exactly the same route-pair sequence, preserving
+empirical pair marginals while removing persistent window membership.
 """
 from __future__ import annotations
 import torch
@@ -26,21 +27,35 @@ def make_correlated_routing_data(
     if mode not in {"window_correlated", "iid"}:
         raise ValueError("mode must be 'window_correlated' or 'iid'")
     if n_experts < 8 or d_model < n_experts:
-        raise ValueError("the fixture requires n_experts >= 8 and d_model >= n_experts")
+        raise ValueError("fixture requires n_experts >= 8 and d_model >= n_experts")
     if window_size < 1:
         raise ValueError("window_size must be >= 1")
-    gen = torch.Generator().manual_seed(seed)
+    route_gen = torch.Generator().manual_seed(seed)
     patterns = sorted(set(pair for group in COMMUNITIES for pair in group))
     pattern_to_id = {p: i for i, p in enumerate(patterns)}
     by_community = [[pattern_to_id[p] for p in group] for group in COMMUNITIES]
+
+    # Construct the positive-control labels first.
     labels = []
     for i in range(n_samples):
-        community = (i // window_size) % 4 if mode == "window_correlated" else int(torch.randint(4, (1,), generator=gen).item())
-        labels.append(by_community[community][int(torch.randint(4, (1,), generator=gen).item())])
+        community = (i // window_size) % len(COMMUNITIES)
+        choices = by_community[community]
+        labels.append(choices[int(torch.randint(len(choices), (1,), generator=route_gen).item())])
+
+    # Matched negative control: same exact route-pair multiset, randomly permuted.
+    if mode == "iid":
+        shuffle_gen = torch.Generator().manual_seed(seed + 101)
+        order = torch.randperm(n_samples, generator=shuffle_gen).tolist()
+        labels = [labels[i] for i in order]
+
     targets = torch.zeros(n_samples, n_experts)
     for i, label in enumerate(labels):
         targets[i, list(patterns[label])] = 1.0
-    raw = torch.randn(d_model, n_experts, generator=gen)
-    basis, _ = torch.linalg.qr(raw, mode="reduced")
-    features = targets @ basis.T.contiguous() + noise * torch.randn(n_samples, d_model, generator=gen)
+
+    # Matched latent feature basis and noise across both conditions.
+    basis_gen = torch.Generator().manual_seed(seed + 202)
+    noise_gen = torch.Generator().manual_seed(seed + 303)
+    raw_basis = torch.randn(d_model, n_experts, generator=basis_gen)
+    basis, _ = torch.linalg.qr(raw_basis, mode="reduced")
+    features = targets @ basis.T.contiguous() + noise * torch.randn(n_samples, d_model, generator=noise_gen)
     return features.float(), targets.float(), patterns
