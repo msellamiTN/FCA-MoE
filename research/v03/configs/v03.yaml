@@ -1,0 +1,22 @@
+experiment:
+  name: fca-moe-v03
+  seed: 7
+  experts: 32
+  top_k: 2
+  chronological_split:
+    train: 0.60
+    validation: 0.20
+    test: 0.20
+  windows: [32, 64, 128]
+  activation_thresholds: [0.10, 0.20, 0.30]
+  null_model:
+    name: pairwise_maxent
+    surrogate_repetitions: 999
+    exact_oracle_max_experts: 16
+  fca:
+    algorithm: NextClosure
+    max_concepts_safety_limit: 100000
+notes:
+  - "Synthetic generator is for software validation, not model evidence."
+  - "The exact MaxEnt oracle is limited to small expert counts; scalable E=32 sampler is a pending implementation gate."
+  - "KV-cache systems claims require separate GPU-backed measurements."
