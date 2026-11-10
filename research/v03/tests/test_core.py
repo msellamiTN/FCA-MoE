@@ -13,6 +13,12 @@ def test_contexts_and_split():
     a, b, c = chronological_split(T)
     assert len(a) + len(b) + len(c) == len(T)
 
+def test_real_model_top4_context_shape():
+    routes = np.array([[0, 1, 2, 3], [4, 5, 6, 7], [0, 8, 9, 10]])
+    T = token_context(routes, n_experts=32)
+    assert T.shape == (3, 32)
+    assert np.all(T.sum(axis=1) == 4)
+
 def test_fca_returns_closed_intents():
     C = np.array([[1,0],[1,0],[0,1]], dtype=np.uint8)
     intents = next_closure(C)
