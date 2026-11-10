@@ -12,11 +12,11 @@ This branch contains FCA algorithms and a real-model routing-trace capture pipel
 - Storage: one atomic Parquet shard per 256-token sequence, with JSON manifest and resumable checkpoints
 - Instrumentation: forward hooks on each `GptOssTopKRouter`, capturing selected expert IDs, selected routing weights and selected router logits
 
-## Critical hardware constraint — T4 is not supported
+## Critical hardware constraint — T4 memory and offload
 
 GPT-OSS-20B expert weights are distributed in MXFP4. Current Hugging Face Transformers MXFP4 documentation specifies NVIDIA compute capability 7.5 or newer. A Colab T4 is SM75 and therefore **meets the documented minimum**. This does not guarantee that the full model fits in T4 VRAM: the pipeline caps GPU memory, uses CPU and local-disk offload, and validates actual model loading/inference. The earlier OpenAI deployment cookbook described Hopper+ for its optimized path; current Hugging Face docs clarify the broader MXFP4 compatibility threshold. Treat T4 execution as a pilot to be measured, not guaranteed.
 
-The extraction script checks compute capability and available host RAM **before downloading model weights**. On T4 it exits with an actionable error. Use a compatible SM90+ GPU (for example, H100) with sufficient host RAM, or separately approve a different checkpoint/quantization route. Do not claim real traces from a T4 run that never executed.
+The extraction script checks compute capability and available host RAM **before downloading model weights**. A T4 passes the documented SM75 minimum; whether the model loads and completes inference with the configured GPU/CPU/disk offload is an empirical pilot gate. Do not claim real traces until the Parquet shards pass validation.
 
 References:
 - [OpenAI GPT-OSS model card](https://deploymentsafety.openai.com/gpt-oss)
