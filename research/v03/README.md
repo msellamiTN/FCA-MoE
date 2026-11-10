@@ -14,7 +14,7 @@ This branch contains FCA algorithms and a real-model routing-trace capture pipel
 
 ## Critical hardware constraint — T4 is not supported
 
-GPT-OSS-20B expert weights are distributed in MXFP4. The upstream Transformers deployment guide specifies Hopper-class SM90 or newer for the optimized MXFP4 path. A Google Colab T4 is SM75 and is **not compatible**. CPU offloading can reduce memory pressure but cannot make an unsupported GPU kernel compatible.
+GPT-OSS-20B expert weights are distributed in MXFP4. Current Hugging Face Transformers MXFP4 documentation specifies NVIDIA compute capability 7.5 or newer. A Colab T4 is SM75 and therefore **meets the documented minimum**. This does not guarantee that the full model fits in T4 VRAM: the pipeline caps GPU memory, uses CPU and local-disk offload, and validates actual model loading/inference. The earlier OpenAI deployment cookbook described Hopper+ for its optimized path; current Hugging Face docs clarify the broader MXFP4 compatibility threshold. Treat T4 execution as a pilot to be measured, not guaranteed.
 
 The extraction script checks compute capability and available host RAM **before downloading model weights**. On T4 it exits with an actionable error. Use a compatible SM90+ GPU (for example, H100) with sufficient host RAM, or separately approve a different checkpoint/quantization route. Do not claim real traces from a T4 run that never executed.
 
@@ -57,7 +57,7 @@ On a supported SM90+ runtime:
 python scripts/extract_gpt_oss_routes.py \\
   --output-dir /content/drive/MyDrive/FCA_MoE_v03/gpt_oss_20b_wikitext_test \\
   --sequence-length 256 --max-chunks 4 \\
-  --gpu-memory 32GiB --cpu-memory 20GiB \\
+  --gpu-memory 12GiB --cpu-memory 8GiB \\
   --offload-folder /content/hf_offload
 ```
 
