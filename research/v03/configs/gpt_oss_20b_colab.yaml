@@ -9,11 +9,12 @@ runtime:
   target: google-colab
   requested_gpu: T4
   t4_compute_capability: "7.5"
-  required_compute_capability: "9.0+"
+  required_compute_capability: "7.5+"
   cpu_offload: true
-  minimum_free_host_ram_gib: 24
-  gpu_memory_budget: 32GiB
-  cpu_memory_budget: 48GiB
+  disk_offload: true
+  minimum_free_host_ram_gib: 8
+  gpu_memory_budget: 12GiB
+  cpu_memory_budget: 8GiB
 
 capture:
   dataset: Salesforce/wikitext
@@ -29,6 +30,6 @@ capture:
 scientific_guardrails:
   - "Only actual GPT-OSS router outputs are accepted as routing observations."
   - "No synthetic routes in the empirical dataset."
-  - "T4/SM75 is rejected; CPU offload does not fix MXFP4 kernel incompatibility."
+  - "T4/SM75 meets the current Hugging Face MXFP4 minimum (SM75); verify runtime kernel load and memory placement empirically."
   - "Prefill teacher-forced traces are not decode-phase traces."
   - "No KV-cache benefit is inferred from routing co-activation."
