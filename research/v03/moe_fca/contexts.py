@@ -1,10 +1,14 @@
 from __future__ import annotations
 import numpy as np
 
-def validate_routes(routes: np.ndarray, n_experts: int = 32, top_k: int = 2) -> np.ndarray:
-    """Validate expert IDs, shape (n_tokens, top_k), and per-token uniqueness."""
+def validate_routes(routes: np.ndarray, n_experts: int = 32, top_k: int | None = None) -> np.ndarray:
+    """Validate expert IDs and per-token uniqueness; infer Top-K from input width by default."""
     x = np.asarray(routes, dtype=int)
-    if x.ndim != 2 or x.shape[1] != top_k:
+    if x.ndim != 2 or x.shape[1] < 1:
+        raise ValueError("routes must have shape (n_tokens, top_k) with top_k >= 1")
+    if top_k is None:
+        top_k = x.shape[1]
+    if x.shape[1] != top_k:
         raise ValueError(f"routes must have shape (n_tokens, {top_k})")
     if np.any((x < 0) | (x >= n_experts)):
         raise ValueError("expert ID outside [0, n_experts)")
