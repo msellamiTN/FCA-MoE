@@ -60,6 +60,8 @@ def token_chunks(dataset, tokenizer, sequence_length: int):
             continue
         ids = tokenizer(text, add_special_tokens=False)["input_ids"]
         if ids:
+            if tokenizer.eos_token_id is not None:
+                ids.append(tokenizer.eos_token_id)
             buffer.extend(ids)
         while len(buffer) >= sequence_length:
             chunk, buffer = buffer[:sequence_length], buffer[sequence_length:]
@@ -69,7 +71,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--sequence-length", type=int, default=256)
-    ap.add_argument("--max-chunks", type=int, default=4, help="0 means consume the complete streaming split")
+    ap.add_argument("--max-chunks", type=int, default=4, help="maximum total committed chunks in this output directory; 0 means the complete streaming split")
     ap.add_argument("--gpu-memory", default="32GiB")
     ap.add_argument("--cpu-memory", default="20GiB")
     ap.add_argument("--offload-folder", default="/content/hf_offload")
@@ -107,8 +109,11 @@ def main():
     if not hasattr(model, "model") or not hasattr(model.model, "layers"):
         raise RuntimeError("Unexpected Transformers GPT-OSS module layout; router instrumentation cannot be attached safely.")
 
+    resolved_revision = args.revision or getattr(cfg, "_commit_hash", None) or getattr(tokenizer, "init_kwargs", {}).get("_commit_hash")
+    if not resolved_revision:
+        raise RuntimeError("Could not resolve an immutable Hugging Face model commit. Pass --revision with a commit SHA.")
     run_config = {
-        "model_id": MODEL_ID, "model_revision": args.revision or getattr(cfg, "_commit_hash", None),
+        "model_id": MODEL_ID, "model_revision": resolved_revision,
         "dataset_id": DATASET_ID, "dataset_config": DATASET_CONFIG, "dataset_split": DATASET_SPLIT,
         "sequence_length": args.sequence_length, "n_experts": n_experts, "top_k": top_k,
         "n_layers": n_layers, "phase": "prefill_teacher_forced",
@@ -142,10 +147,10 @@ def main():
     processed_this_run = 0
     try:
         for chunk_id, token_ids in enumerate(token_chunks(dataset, tokenizer, args.sequence_length)):
+            if args.max_chunks and chunk_id >= args.max_chunks:
+                break
             if chunk_id < start_chunk:
                 continue
-            if args.max_chunks and processed_this_run >= args.max_chunks:
-                break
             captures.clear()
             input_device = model.get_input_embeddings().weight.device
             if input_device.type == "meta":
@@ -192,7 +197,7 @@ def main():
     finally:
         for handle in handles:
             handle.remove()
-    writer.finish("completed" if args.max_chunks == 0 or processed_this_run < args.max_chunks else "partial")
+    writer.finish("completed" if args.max_chunks == 0 or writer.next_chunk_id >= args.max_chunks else "partial")
     print(json.dumps(writer.manifest, indent=2))
 
 if __name__ == "__main__":
