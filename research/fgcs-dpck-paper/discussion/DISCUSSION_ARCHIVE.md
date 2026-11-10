@@ -227,7 +227,7 @@ The second assessment judged the full framework as titled to be too broad and no
 - Low acceptance probability for systems venues without real cluster speedups.
 - More plausible FCA/data-mining/knowledge-representation positioning if the result is mainly representational or methodological.
 
-The review specifically warned that a Top-8 residual bound can be loose: if selected concepts contain only two or three experts, the uncovered-expert upper bound can permit five or more extra devices, even though the actual token destination count is at most seven.
+The review specifically warned that a Top-8 residual bound can be loose: if selected concepts contain only two or three experts, the uncovered-expert upper bound can permit five or more extra devices. In an eight-device deployment with one source device, the actual number of distinct remote destinations is at most seven; in general it is bounded by min(K, |D|-1). The numerical comparison therefore depends on the declared device count.
 
 ### 6.1 Expert recommendation retained
 
