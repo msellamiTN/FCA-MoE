@@ -1,26 +1,39 @@
 # FCA–MoE v0.3 — Executable Research Scaffold
 
-This directory contains executable code for formal-context construction, FCA concept enumeration, structural diagnostics, and an exact pairwise-MaxEnt oracle for small expert counts.
+This branch contains FCA algorithms and a real-model routing-trace capture pipeline for **OpenAI GPT-OSS-20B**.
 
-## Scientific status and scope
+## Approved real-model target
 
-This is a **runnable research scaffold**, not a completed 32-expert MaxEnt experiment and not evidence of GPU/KV-cache speedups.
+- Model: `openai/gpt-oss-20b`
+- Architecture: 24 MoE layers, 32 experts, Top-4 per token
+- Empirical source: actual router outputs from the pretrained model
+- Initial corpus: `Salesforce/wikitext`, `wikitext-2-raw-v1`, test split
+- Capture phase: teacher-forced prefill (not autoregressive decode)
+- Storage: one atomic Parquet shard per 256-token sequence, with JSON manifest and resumable checkpoints
+- Instrumentation: forward hooks on each `GptOssTopKRouter`, capturing selected expert IDs, selected routing weights and selected router logits
 
-- Experimental configuration: 32 experts, strict Top-2 routing.
-- Chronological split: 60/20/20.
-- Window sizes: 32, 64, 128.
-- Activation thresholds: 0.10, 0.20, 0.30.
-- FCA algorithm: NextClosure with a concept-count safety limit.
-- Exact pairwise-MaxEnt oracle: E <= 16, for validating a future scalable sampler.
-- Approved surrogate target: 999 repetitions; scalable E=32 sampler remains a pending implementation gate.
+## Critical hardware constraint — T4 is not supported
 
-Synthetic routes are for software validation only, not pretrained-LLM evidence.
+GPT-OSS-20B expert weights are distributed in MXFP4. The upstream Transformers deployment guide specifies Hopper-class SM90 or newer for the optimized MXFP4 path. A Google Colab T4 is SM75 and is **not compatible**. CPU offloading can reduce memory pressure but cannot make an unsupported GPU kernel compatible.
 
-## Google Colab
+The extraction script checks compute capability and available host RAM **before downloading model weights**. On T4 it exits with an actionable error. Use a compatible SM90+ GPU (for example, H100) with sufficient host RAM, or separately approve a different checkpoint/quantization route. Do not claim real traces from a T4 run that never executed.
 
-Open [FCA_MoE_v03_scaffold.ipynb](notebooks/FCA_MoE_v03_scaffold.ipynb). The notebook clones this repository branch and runs from `research/v03`. CPU is sufficient for this scaffold; GPU is not required.
+References:
+- [OpenAI GPT-OSS model card](https://deploymentsafety.openai.com/gpt-oss)
+- [OpenAI guide: run gpt-oss with Transformers](https://developers.openai.com/cookbook/articles/gpt-oss/run-transformers)
+- [Transformers GPT-OSS documentation](https://huggingface.co/docs/transformers/en/model_doc/gpt_oss)
 
-## Local installation and execution
+## Colab notebooks
+
+1. [Real GPT-OSS-20B routing extraction](notebooks/GPT_OSS_20B_Real_Routing_Extraction.ipynb) — hardware preflight, Drive mount, model instrumentation, 4-chunk pilot and resumable Parquet output.
+2. [Trace validation and audit](notebooks/GPT_OSS_20B_Trace_Validation.ipynb) — validates persisted shards without reloading the model.
+3. [FCA-MoE v0.3 scaffold](notebooks/FCA_MoE_v03_scaffold.ipynb) — FCA and small-E exact MaxEnt software checks.
+
+Open directly in Colab:
+- [Extraction notebook](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/GPT_OSS_20B_Real_Routing_Extraction.ipynb)
+- [Validation notebook](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/GPT_OSS_20B_Trace_Validation.ipynb)
+
+## Local installation and tests
 
 From `research/v03`:
 
@@ -29,25 +42,41 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
 python -m pip install --upgrade pip
 python -m pip install -e .
+python -m pip install pytest
 python -m pytest -q
 python scripts/run_v03_smoke.py --tokens 4096
 ```
 
-The smoke test writes `outputs/v03_smoke/smoke_report.json`.
+For the model runtime, install a compatible PyTorch/CUDA stack plus Transformers, Accelerate, Datasets, Triton and the Hugging Face `kernels` package as described in the upstream deployment guide. The Colab notebook installs these runtime packages without replacing Colab's preinstalled PyTorch.
 
-## Modules
+## CLI: capture and resume
 
-- `moe_fca/contexts.py`: strict route validation, token/window contexts, chronological split.
-- `moe_fca/fca.py`: NextClosure, concept support and summaries.
-- `moe_fca/metrics.py`: marginal/pairwise moments and concept profiles.
-- `moe_fca/maxent_exact.py`: exact pairwise log-linear MaxEnt oracle for small E.
-- `moe_fca/synthetic.py`: planted synthetic route generator.
-- `configs/v03.yaml`: approved parameters and implementation boundaries.
-- `tests/test_core.py`: unit tests.
-- `scripts/run_v03_smoke.py`: reproducible end-to-end smoke run.
+On a supported SM90+ runtime:
 
-## Next implementation gate
+```bash
+python scripts/extract_gpt_oss_routes.py \\
+  --output-dir /content/drive/MyDrive/FCA_MoE_v03/gpt_oss_20b_wikitext_test \\
+  --sequence-length 256 --max-chunks 4 \\
+  --gpu-memory 32GiB --cpu-memory 20GiB \\
+  --offload-folder /content/hf_offload
+```
 
-Implement a scalable E=32 pairwise-MaxEnt sampler; validate it against the exact oracle at small E; report convergence, marginal/pairwise residuals, effective sample size, and initialization sensitivity before running the 999-surrogate protocol.
+Rerun with the same arguments and output directory after interruption. The writer resumes from the next contiguous committed shard. Increase `--max-chunks` for a larger run; use `0` to stream the complete dataset split.
 
-KV-cache locality is a separate systems hypothesis. It requires explicit cache policy, realistic sequence workloads, GPU instrumentation, and baseline comparisons. FCA concept statistics are not substitutes for cache hit rate, latency, throughput, memory, communication, or energy measurements.
+Validate:
+
+```bash
+python scripts/validate_gpt_oss_traces.py --output-dir /path/to/gpt_oss_20b_wikitext_test
+```
+
+## Trace schema
+
+Each row represents one (sequence, token, MoE layer) observation and includes model/revision, corpus/split, sequence ID, token position and token ID, layer ID, four selected expert IDs, four selected routing weights, and four selected router logits. The full 32-way logits are not persisted to keep storage manageable. The manifest records the architecture, instrumentation method, sequence length, completed shards, and run fingerprint.
+
+## Scientific guardrails
+
+- Synthetic routes are software tests only; they are never mixed into empirical traces.
+- Router decisions are captured from the original pretrained model. No router is replaced or modified.
+- This first extractor measures teacher-forced prefill. Decode-phase traces require a separate implementation and label.
+- Routing co-activation does not establish KV-cache reuse or speedup.
+- The scalable E=32 pairwise-MaxEnt sampler, 999-surrogate protocol, bounded incremental FCA, and GPU KV-cache systems benchmark remain separate pending milestones.
