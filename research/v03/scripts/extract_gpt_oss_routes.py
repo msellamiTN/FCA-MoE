@@ -75,7 +75,8 @@ def main():
     ap.add_argument("--gpu-memory", default="12GiB")
     ap.add_argument("--cpu-memory", default="8GiB")
     ap.add_argument("--offload-folder", default="/content/hf_offload")
-    ap.add_argument("--revision", default=None, help="Optional immutable Hugging Face model revision")
+    ap.add_argument("--revision", default=None, help="Optional immutable Hugging Face model commit SHA")
+    ap.add_argument("--dataset-revision", default="main", help="Hugging Face dataset revision (pin a commit SHA for strict reproducibility)")
     ap.add_argument("--no-resume", action="store_true")
     ap.add_argument("--min-cpu-ram-gib", type=float, default=8.0)
     args = ap.parse_args()
@@ -101,6 +102,15 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(MODEL_ID, **model_kwargs)
     model.eval()
     cfg = model.config
+    quant_cfg = getattr(cfg, "quantization_config", None)
+    if hasattr(quant_cfg, "to_dict"):
+        quant_cfg = quant_cfg.to_dict()
+    quant_method = quant_cfg.get("quant_method") if isinstance(quant_cfg, dict) else None
+    if quant_method != "mxfp4":
+        raise RuntimeError(
+            f"Expected the checkpoint's native MXFP4 quantization, got {quant_method!r}. "
+            "Refusing an implicit precision fallback; inspect the load logs and approve any precision change explicitly."
+        )
     n_experts = int(getattr(cfg, "num_local_experts", -1))
     top_k = int(getattr(cfg, "num_experts_per_tok", -1))
     n_layers = int(getattr(cfg, "num_hidden_layers", -1))
@@ -114,7 +124,7 @@ def main():
         raise RuntimeError("Could not resolve an immutable Hugging Face model commit. Pass --revision with a commit SHA.")
     run_config = {
         "model_id": MODEL_ID, "model_revision": resolved_revision,
-        "dataset_id": DATASET_ID, "dataset_config": DATASET_CONFIG, "dataset_split": DATASET_SPLIT,
+        "dataset_id": DATASET_ID, "dataset_config": DATASET_CONFIG, "dataset_split": DATASET_SPLIT, "dataset_revision": args.dataset_revision,
         "sequence_length": args.sequence_length, "n_experts": n_experts, "top_k": top_k,
         "n_layers": n_layers, "phase": "prefill_teacher_forced",
         "instrumentation": "forward_hook_on_each_GptOssTopKRouter",
@@ -141,7 +151,7 @@ def main():
             raise RuntimeError(f"Missing GPT-OSS router at transformer layer {layer_id}.")
         handles.append(layer.mlp.router.register_forward_hook(make_hook(layer_id)))
 
-    dataset = load_dataset(DATASET_ID, DATASET_CONFIG, split=DATASET_SPLIT, streaming=True)
+    dataset = load_dataset(DATASET_ID, DATASET_CONFIG, split=DATASET_SPLIT, revision=args.dataset_revision, streaming=True)
     start_chunk = writer.next_chunk_id
     print(f"Resume point: chunk {start_chunk}; output={args.output_dir}")
     processed_this_run = 0
