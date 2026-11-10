@@ -2,7 +2,7 @@ experiment:
   name: fca-moe-v03
   seed: 7
   experts: 32
-  top_k: 2
+  top_k: 4
   chronological_split:
     train: 0.60
     validation: 0.20
