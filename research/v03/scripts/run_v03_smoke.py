@@ -23,7 +23,7 @@ def main() -> None:
     args = parser.parse_args()
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
-    routes = planted_routes(n_tokens=args.tokens, n_experts=32, top_k=2, seed=args.seed)
+    routes = planted_routes(n_tokens=args.tokens, n_experts=32, top_k=4, seed=args.seed)
     T = token_context(routes, n_experts=32)
     train, validation, test = chronological_split(T)
     report = {
