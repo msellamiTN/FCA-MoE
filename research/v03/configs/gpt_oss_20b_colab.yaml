@@ -1,0 +1,34 @@
+model:
+  id: openai/gpt-oss-20b
+  experts: 32
+  top_k: 4
+  moe_layers: 24
+  revision: null  # Set a Hugging Face commit SHA for strict reproducibility.
+
+runtime:
+  target: google-colab
+  requested_gpu: T4
+  t4_compute_capability: "7.5"
+  required_compute_capability: "9.0+"
+  cpu_offload: true
+  minimum_free_host_ram_gib: 24
+  gpu_memory_budget: 32GiB
+  cpu_memory_budget: 48GiB
+
+capture:
+  dataset: Salesforce/wikitext
+  dataset_config: wikitext-2-raw-v1
+  split: test
+  sequence_length: 256
+  initial_pilot_chunks: 4
+  phase: prefill_teacher_forced
+  storage_format: parquet
+  checkpoint_frequency: every_sequence_chunk
+  resume: true
+
+scientific_guardrails:
+  - "Only actual GPT-OSS router outputs are accepted as routing observations."
+  - "No synthetic routes in the empirical dataset."
+  - "T4/SM75 is rejected; CPU offload does not fix MXFP4 kernel incompatibility."
+  - "Prefill teacher-forced traces are not decode-phase traces."
+  - "No KV-cache benefit is inferred from routing co-activation."
