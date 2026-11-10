@@ -1,3 +1,20 @@
+## FCA–MoE v0.3 — Lattice / MoE / KV-cache research scaffold
+
+[![Open v0.3 in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/FCA_MoE_v03_scaffold.ipynb) [![v0.3 tests](https://github.com/msellamiTN/FCA-MoE/actions/workflows/v03-tests.yml/badge.svg)](https://github.com/msellamiTN/FCA-MoE/actions/workflows/v03-tests.yml)
+
+The executable v0.3 scaffold is in [research/v03](research/v03/README.md). It includes context construction, NextClosure, structural metrics, a small-E exact pairwise-MaxEnt oracle, a Colab notebook, a smoke-test CLI, configuration, and a dedicated CI workflow.
+
+**Scientific boundary:** this is not yet the completed E=32 pairwise-MaxEnt experiment. The scalable E=32 sampler and 999-surrogate protocol remain pending validation. Synthetic routes are software-validation data, not pretrained-LLM evidence. No GPU or KV-cache speedup is claimed.
+
+Local quick start:
+
+```bash
+cd research/v03
+python -m pip install -e .
+python -m pytest -q
+python scripts/run_v03_smoke.py --tokens 4096
+```
+
 # FCA-MoE — Formal Concept-Guided Expert Locality
 
 [![Open in Colab v0.2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/main/notebooks/FCA_MoE_v02_Controls.ipynb) [![Tests](https://github.com/msellamiTN/FCA-MoE/actions/workflows/tests.yml/badge.svg)](https://github.com/msellamiTN/FCA-MoE/actions/workflows/tests.yml)
