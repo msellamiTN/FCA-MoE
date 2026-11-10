@@ -2,7 +2,7 @@
 """Capture actual GPT-OSS-20B router decisions with resumable Parquet checkpoints.
 
 This script intentionally refuses unsupported GPU architectures. MXFP4 expert
-kernels require Hopper-class (SM90+) hardware per the upstream deployment guide.
+kernels require NVIDIA compute capability 7.5+ per the upstream deployment guide.
 CPU offload is a memory-placement strategy; it cannot make an unsupported GPU kernel run.
 """
 from __future__ import annotations
@@ -37,12 +37,12 @@ def hardware_preflight(min_cpu_gib: float = 24.0) -> dict:
         "gpu_vram_free_gib": round(free / 2**30, 2),
         "gpu_vram_total_gib": round(total / 2**30, 2),
     })
-    if capability < (9, 0):
+    if capability < (7, 5):
         raise RuntimeError(
             f"Unsupported GPU: {name} has compute capability {capability[0]}.{capability[1]}. "
-            "The upstream GPT-OSS MXFP4 Transformers path requires Hopper SM90 or newer. "
-            "A Colab T4 (SM75) is incompatible; CPU offload does not fix kernel compatibility. "
-            "Switch to an H100/SM90+ runtime or choose a different checkpoint/quantization after a separate scientific approval."
+            "The current Hugging Face MXFP4 documentation specifies NVIDIA compute capability 7.5 or newer. "
+            "A Colab T4 (SM75) meets the documented minimum; memory placement and actual kernel loading must still be tested. "
+            "If kernel loading or inference fails, retain the diagnostic and evaluate the documented higher-precision fallback or a different runtime without silently changing the experiment."
         )
     if info["cpu_ram_available_gib"] < min_cpu_gib:
         raise RuntimeError(
@@ -72,12 +72,12 @@ def main():
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--sequence-length", type=int, default=256)
     ap.add_argument("--max-chunks", type=int, default=4, help="maximum total committed chunks in this output directory; 0 means the complete streaming split")
-    ap.add_argument("--gpu-memory", default="32GiB")
-    ap.add_argument("--cpu-memory", default="20GiB")
+    ap.add_argument("--gpu-memory", default="12GiB")
+    ap.add_argument("--cpu-memory", default="8GiB")
     ap.add_argument("--offload-folder", default="/content/hf_offload")
     ap.add_argument("--revision", default=None, help="Optional immutable Hugging Face model revision")
     ap.add_argument("--no-resume", action="store_true")
-    ap.add_argument("--min-cpu-ram-gib", type=float, default=24.0)
+    ap.add_argument("--min-cpu-ram-gib", type=float, default=8.0)
     args = ap.parse_args()
     if args.sequence_length < 16:
         ap.error("--sequence-length must be >= 16")
