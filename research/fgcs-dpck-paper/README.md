@@ -47,3 +47,15 @@ Two passes resolve cross-references. The current build uses the embedded manual 
 ## Current status
 
 This branch contains a research draft and experiment scaffold, not an empirical submission-ready paper. No real OLMoE trace has yet been captured on Colab T4, the Hugging Face Space has not been deployed, and no physical multi-GPU experiment has been performed.
+
+
+## Research discussion archive
+
+The discussion and decision history is versioned alongside the manuscript:
+
+- [Consolidated discussion archive](discussion/DISCUSSION_ARCHIVE.md)
+- [Decision log and scope boundaries](discussion/DECISION_LOG.md)
+- [Experiment register and go/no-go protocol](discussion/EXPERIMENT_REGISTER.md)
+- [Reviewer-risk matrix and claim discipline](discussion/REVIEWER_RISK_MATRIX.md)
+
+These files distinguish prior local synthetic results, formal statements under assumptions, constructed finite examples, proposed theory, and experiments that remain unexecuted. The archive is a consolidated record of the available discussion context, not a verbatim export of every earlier chat.
