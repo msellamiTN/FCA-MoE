@@ -2,9 +2,11 @@
 
 [![Open v0.3 in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/FCA_MoE_v03_scaffold.ipynb) [![v0.3 tests](https://github.com/msellamiTN/FCA-MoE/actions/workflows/v03-tests.yml/badge.svg)](https://github.com/msellamiTN/FCA-MoE/actions/workflows/v03-tests.yml)
 
-The executable v0.3 scaffold is in [research/v03](research/v03/README.md). It includes context construction, NextClosure, structural metrics, a small-E exact pairwise-MaxEnt oracle, a Colab notebook, a smoke-test CLI, configuration, and a dedicated CI workflow.
+The executable v0.3 project is in [research/v03](research/v03/README.md). It includes FCA algorithms, a small-E exact pairwise-MaxEnt oracle, real GPT-OSS-20B router instrumentation, resumable Parquet extraction, validation scripts, Colab notebooks, and CI.
 
-**Scientific boundary:** this is not yet the completed E=32 pairwise-MaxEnt experiment. The scalable E=32 sampler and 999-surrogate protocol remain pending validation. Synthetic routes are software-validation data, not pretrained-LLM evidence. No GPU or KV-cache speedup is claimed.
+**Real-model target:** OpenAI GPT-OSS-20B (24 MoE layers, 32 experts, Top-4). The capture pipeline is implemented but has **not yet been executed** to collect empirical traces. Critical: the upstream MXFP4 path requires Hopper-class SM90+ hardware; a Colab T4 (SM75) is incompatible, and CPU offload does not fix that kernel limitation. See the [real-model extraction notebook](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/GPT_OSS_20B_Real_Routing_Extraction.ipynb).
+
+The scalable E=32 pairwise-MaxEnt sampler and 999-surrogate protocol remain pending validation. Synthetic routes are software tests only. No GPU or KV-cache speedup is claimed.
 
 Local quick start:
 
@@ -19,7 +21,7 @@ python scripts/run_v03_smoke.py --tokens 4096
 
 [![Open in Colab v0.2](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/main/notebooks/FCA_MoE_v02_Controls.ipynb) [![Tests](https://github.com/msellamiTN/FCA-MoE/actions/workflows/tests.yml/badge.svg)](https://github.com/msellamiTN/FCA-MoE/actions/workflows/tests.yml)
 
-**Current stage:** FCA-MoE v0.2 controlled synthetic recovery. No pretrained-LLM results yet; GPT-OSS-20B remains a candidate and has not been loaded in this repository.
+**Baseline:** v0.2 controlled synthetic recovery is retained as the baseline. v0.3 now contains a real GPT-OSS-20B trace-capture pipeline, but no pretrained-model traces have yet been collected.
 
 ## Open in Google Colab
 
