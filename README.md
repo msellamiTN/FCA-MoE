@@ -4,7 +4,7 @@
 
 The executable v0.3 project is in [research/v03](research/v03/README.md). It includes FCA algorithms, a small-E exact pairwise-MaxEnt oracle, real GPT-OSS-20B router instrumentation, resumable Parquet extraction, validation scripts, Colab notebooks, and CI.
 
-**Real-model target:** OpenAI GPT-OSS-20B (24 MoE layers, 32 experts, Top-4). The capture pipeline is implemented but has **not yet been executed** to collect empirical traces. Critical: the upstream MXFP4 path requires Hopper-class SM90+ hardware; a Colab T4 (SM75) is incompatible, and CPU offload does not fix that kernel limitation. See the [real-model extraction notebook](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/GPT_OSS_20B_Real_Routing_Extraction.ipynb).
+**Real-model target:** OpenAI GPT-OSS-20B (24 MoE layers, 32 experts, Top-4). The capture pipeline is implemented but has **not yet been executed** to collect empirical traces. The current Hugging Face MXFP4 documentation specifies SM75+; a Colab T4 meets that minimum, but full-model fit is not guaranteed. The extractor uses CPU/disk offload and must pass a real inference pilot. See the [real-model extraction notebook](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/GPT_OSS_20B_Real_Routing_Extraction.ipynb).
 
 The scalable E=32 pairwise-MaxEnt sampler and 999-surrogate protocol remain pending validation. Synthetic routes are software tests only. No GPU or KV-cache speedup is claimed.
 
