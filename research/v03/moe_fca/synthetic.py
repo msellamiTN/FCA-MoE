@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 
-def planted_routes(n_tokens=12_000, n_experts=32, top_k=2, n_groups=8,
+def planted_routes(n_tokens=12_000, n_experts=32, top_k=4, n_groups=8,
                    group_strength=.85, seed=7):
     """Synthetic planted-group routes for software checks, never model evidence."""
     if n_experts % n_groups:
