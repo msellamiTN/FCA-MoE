@@ -8,7 +8,6 @@ CPU offload is a memory-placement strategy; it cannot make an unsupported GPU ke
 from __future__ import annotations
 import argparse, hashlib, json, platform, sys
 from pathlib import Path
-from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
@@ -72,7 +71,8 @@ def main():
     ap.add_argument("--sequence-length", type=int, default=256)
     ap.add_argument("--max-chunks", type=int, default=4, help="0 means consume the complete streaming split")
     ap.add_argument("--gpu-memory", default="32GiB")
-    ap.add_argument("--cpu-memory", default="48GiB")
+    ap.add_argument("--cpu-memory", default="20GiB")
+    ap.add_argument("--offload-folder", default="/content/hf_offload")
     ap.add_argument("--revision", default=None, help="Optional immutable Hugging Face model revision")
     ap.add_argument("--no-resume", action="store_true")
     ap.add_argument("--min-cpu-ram-gib", type=float, default=24.0)
@@ -91,7 +91,7 @@ def main():
     model_kwargs = {
         "device_map": "auto", "torch_dtype": "auto",
         "max_memory": {0: args.gpu_memory, "cpu": args.cpu_memory},
-        "offload_folder": str(Path(args.output_dir) / "hf_offload"),
+        "offload_folder": args.offload_folder,
         "offload_state_dict": True, "low_cpu_mem_usage": True,
         "revision": args.revision,
     }
