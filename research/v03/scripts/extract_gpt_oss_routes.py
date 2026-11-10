@@ -105,7 +105,8 @@ def main():
     quant_cfg = getattr(cfg, "quantization_config", None)
     if hasattr(quant_cfg, "to_dict"):
         quant_cfg = quant_cfg.to_dict()
-    quant_method = quant_cfg.get("quant_method") if isinstance(quant_cfg, dict) else None
+    quant_method = (quant_cfg.get("quant_method") if isinstance(quant_cfg, dict)
+                    else getattr(quant_cfg, "quant_method", None))
     if quant_method != "mxfp4":
         raise RuntimeError(
             f"Expected the checkpoint's native MXFP4 quantization, got {quant_method!r}. "
