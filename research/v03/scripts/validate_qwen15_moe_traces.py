@@ -47,6 +47,20 @@ def validate(output_dir: str | Path) -> dict:
             raise AssertionError(f"Manifest {key}={cfg.get(key)!r}; expected {expected!r}")
     if set(df["layer_id"].unique()) != set(range(N_LAYERS)):
         raise AssertionError("Trace does not contain all 24 MoE layers")
+    key_cols = ["sequence_id", "layer_id", "token_position"]
+    if df.duplicated(key_cols).any():
+        raise AssertionError("Duplicate sequence/layer/token-position rows found")
+    expected_identity = {
+        "model_id": cfg["model_id"],
+        "model_revision": cfg["model_revision"],
+        "runtime_dtype": cfg["runtime_dtype"],
+        "dataset_id": cfg["dataset_id"],
+        "dataset_split": cfg["dataset_split"],
+        "phase": cfg["phase"],
+    }
+    for column, expected_value in expected_identity.items():
+        if set(df[column].astype(str).unique()) != {str(expected_value)}:
+            raise AssertionError(f"Trace column {column} disagrees with manifest")
     experts = df[expert_cols].to_numpy(dtype=int)
     scores = df[score_cols].to_numpy(dtype=float)
     selected_logits = df[logit_cols].to_numpy(dtype=float)
@@ -73,6 +87,15 @@ def validate(output_dir: str | Path) -> dict:
     expected_tokens = int(cfg["sequence_length"])
     if not (token_counts == expected_tokens).all():
         raise AssertionError("A sequence/layer is missing token positions")
+    expected_positions = set(range(expected_tokens))
+    for _, group in df.groupby(["sequence_id", "layer_id"]):
+        if set(group["token_position"].astype(int)) != expected_positions:
+            raise AssertionError("Token positions are not the complete expected contiguous range")
+    expected_rows = (
+        int(df["sequence_id"].nunique()) * N_LAYERS * expected_tokens
+    )
+    if len(df) != expected_rows:
+        raise AssertionError(f"Unexpected row count: {len(df)}; expected {expected_rows}")
     # For each row, verify selected logits and scores correspond to the same
     # expert order, and that selected probabilities are non-increasing.
     if np.any(np.diff(scores, axis=1) > 2e-5):
