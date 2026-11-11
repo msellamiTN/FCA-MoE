@@ -64,6 +64,8 @@ def validate(output_dir: str | Path) -> dict:
     gate_weights = df["shared_gate_weight"].to_numpy(dtype=float)
     if not np.isfinite(gate_logits).all() or not np.isfinite(gate_weights).all():
         raise AssertionError("Non-finite shared gate values")
+    if np.any((gate_weights < 0) | (gate_weights > 1)):
+        raise AssertionError("Shared gate sigmoid weights must lie in [0,1]")
     expected_gate = 1.0 / (1.0 + np.exp(-gate_logits))
     if not np.allclose(gate_weights, expected_gate, rtol=2e-5, atol=2e-6):
         raise AssertionError("Shared gate weights do not match sigmoid(shared_gate_logit)")
