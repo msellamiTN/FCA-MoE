@@ -236,10 +236,13 @@ def main():
                 expected_scores = np.take_along_axis(probs, ids.astype(np.int64), axis=1)
                 if not np.allclose(scores, expected_scores, rtol=3e-3, atol=3e-5):
                     raise RuntimeError(f"Captured routing scores disagree with softmax(logits) at layer {layer_id}.")
-                expected_ids = np.argsort(-probs, axis=1)[:, :top_k]
-                # Compare selected sets; top-k order is score-descending.
-                if not np.array_equal(ids.astype(np.int64), expected_ids):
-                    raise RuntimeError(f"Captured expert indices disagree with recomputed Top-K at layer {layer_id}.")
+                # Check Top-K membership by threshold. This permits legitimate
+                # ties at the K-th boundary without imposing NumPy's tie order.
+                kth_threshold = np.partition(probs, -top_k, axis=1)[:, -top_k]
+                if np.any(scores < (kth_threshold[:, None] - 3e-5)):
+                    raise RuntimeError(f"Captured experts are not a valid Top-{top_k} set at layer {layer_id}.")
+                if np.any(np.diff(scores, axis=1) > 3e-5):
+                    raise RuntimeError(f"Captured Top-K scores are not ordered descending at layer {layer_id}.")
                 if not np.isfinite(shared_weights).all() or np.any((shared_weights <= 0) | (shared_weights >= 1)):
                     raise RuntimeError(f"Invalid shared expert sigmoid gate at layer {layer_id}.")
                 part = pd.DataFrame({
