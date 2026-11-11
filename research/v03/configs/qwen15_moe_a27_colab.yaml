@@ -1,0 +1,43 @@
+model:
+  id: Qwen/Qwen1.5-MoE-A2.7B
+  model_type: qwen2_moe
+  routed_experts: 60
+  top_k: 4
+  moe_layers: 24
+  logical_shared_experts: 4
+  shared_expert_runtime_representation: merged_MLP_plus_scalar_sigmoid_gate
+  checkpoint_dtype: bfloat16
+  colab_runtime_dtype: float16
+  revision: null  # Pin a Hugging Face commit SHA for strict reproducibility.
+
+runtime:
+  target: google-colab
+  requested_gpu: T4
+  minimum_compute_capability: "7.5"
+  gpu_memory_budget: 12GiB
+  cpu_memory_budget: 6GiB
+  minimum_free_host_ram_gib: 6
+  disk_offload: true
+  offload_folder: /content/qwen_hf_offload
+
+capture:
+  dataset: Salesforce/wikitext
+  dataset_config: wikitext-2-raw-v1
+  split: test
+  sequence_length: 256
+  initial_pilot_chunks: 4
+  phase: prefill_teacher_forced
+  storage_format: parquet
+  checkpoint_frequency: every_sequence_chunk
+  resume: true
+  capture_routed_topk: true
+  capture_shared_expert_gate: true
+
+scientific_guardrails:
+  - "Capture actual Qwen2MoeTopKRouter outputs; do not infer routes from post-hoc activation statistics."
+  - "60 routed experts and Top-4 are distinct from the four logical shared experts."
+  - "The Transformers implementation exposes a merged shared_expert MLP and one scalar sigmoid gate; do not claim four independently instrumented shared modules."
+  - "The checkpoint declares BF16, but T4 execution uses explicit FP16 conversion; results are FP16-runtime traces."
+  - "Qwen norm_topk_prob is false: Top-4 router scores are raw softmax probabilities and generally do not sum to one."
+  - "Teacher-forced prefill traces are not autoregressive decode traces."
+  - "Routing co-activation alone does not establish KV-cache reuse or speedup."
