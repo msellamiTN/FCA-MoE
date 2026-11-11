@@ -1,6 +1,6 @@
 # FCA–MoE v0.3 — Executable Research Scaffold
 
-This branch contains FCA algorithms and a real-model routing-trace capture pipeline for **OpenAI GPT-OSS-20B**.
+This branch contains FCA algorithms and real-model routing-trace capture pipelines for **OpenAI GPT-OSS-20B** and **Qwen1.5-MoE-A2.7B**.
 
 ## Approved real-model target
 
@@ -23,15 +23,38 @@ References:
 - [OpenAI guide: run gpt-oss with Transformers](https://developers.openai.com/cookbook/articles/gpt-oss/run-transformers)
 - [Transformers GPT-OSS documentation](https://huggingface.co/docs/transformers/en/model_doc/gpt_oss)
 
+## Additional real-model target: Qwen1.5-MoE-A2.7B
+
+- Model: `Qwen/Qwen1.5-MoE-A2.7B`
+- Architecture: 24 MoE layers, 60 routed experts, Top-4 routed experts per token, plus four logical shared experts.
+- Important implementation detail: the Transformers Qwen2-MoE block exposes a merged `shared_expert` MLP and a scalar `shared_expert_gate`; the extractor records the actual scalar gate logit and sigmoid weight. It does not claim to capture four separately instantiated shared modules.
+- Checkpoint dtype: BF16. The T4 notebook explicitly converts/loads weights as FP16 because T4 is not a native BF16 compute target. The traces are therefore labelled FP16-runtime traces and are not claimed to be bit-identical to BF16 execution.
+- The checkpoint contains about 14.3B total parameters, although about 2.7B are active per token. Active parameter count is not the storage footprint; CPU and disk offload are required for the T4 pilot.
+- Router scores are raw selected softmax probabilities because `norm_topk_prob=false`; they generally do **not** sum to one. The extractor verifies selected weights against softmax(router logits), rather than applying GPT-OSS's normalized-score check.
+- Capture phase: teacher-forced prefill only.
+
+Files:
+- `scripts/extract_qwen15_moe_routes.py`
+- `scripts/validate_qwen15_moe_traces.py`
+- `configs/qwen15_moe_a27_colab.yaml`
+- `notebooks/Qwen1_5_MoE_A2_7B_Real_Routing_Extraction.ipynb`
+
+Qwen references:
+- [Official Hugging Face model configuration](https://huggingface.co/Qwen/Qwen1.5-MoE-A2.7B/blob/main/config.json)
+- [Qwen1.5-MoE architecture description](https://qwenlm.github.io/blog/qwen-moe/)
+- [Transformers Qwen2-MoE implementation documentation](https://huggingface.co/docs/transformers/en/model_doc/qwen2_moe)
+
 ## Colab notebooks
 
 1. [Real GPT-OSS-20B routing extraction](notebooks/GPT_OSS_20B_Real_Routing_Extraction.ipynb) — hardware preflight, Drive mount, model instrumentation, 4-chunk pilot and resumable Parquet output.
 2. [Trace validation and audit](notebooks/GPT_OSS_20B_Trace_Validation.ipynb) — validates persisted shards without reloading the model.
-3. [FCA-MoE v0.3 scaffold](notebooks/FCA_MoE_v03_scaffold.ipynb) — FCA and small-E exact MaxEnt software checks.
+3. [Qwen1.5-MoE-A2.7B real routing extraction](notebooks/Qwen1_5_MoE_A2_7B_Real_Routing_Extraction.ipynb) — 60 routed experts, Top-4, shared-gate capture, FP16 T4 pilot and Parquet validation.
+4. [FCA-MoE v0.3 scaffold](notebooks/FCA_MoE_v03_scaffold.ipynb) — FCA and small-E exact MaxEnt software checks.
 
 Open directly in Colab:
 - [Extraction notebook](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/GPT_OSS_20B_Real_Routing_Extraction.ipynb)
 - [Validation notebook](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/GPT_OSS_20B_Trace_Validation.ipynb)
+- [Qwen1.5-MoE extraction notebook](https://colab.research.google.com/github/msellamiTN/FCA-MoE/blob/research/fca-moe-v0.3/research/v03/notebooks/Qwen1_5_MoE_A2_7B_Real_Routing_Extraction.ipynb)
 
 ## Local installation and tests
 
