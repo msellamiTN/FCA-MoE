@@ -160,7 +160,7 @@ def run_validation(root, output, lambdas, maxiter, grid_step,
             target_pair=model.fitted_pair_moments,
             grid_step=grid_step,
             screen_replicates=screen_replicates,
-            chains=4,
+            chains=len(train),
             length=len(train[0]),
             seed_base=seed + 100000 + held * 1000000,
         )
