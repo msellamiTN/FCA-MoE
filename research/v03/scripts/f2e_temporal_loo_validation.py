@@ -49,8 +49,8 @@ def transition_probability(model, previous_state_id, next_state_id, weights,
                            group_masses=None):
     """Exact P(next_state | previous_state) for the conditional Gibbs mixture."""
     w = np.asarray(weights, dtype=float)
-    if w.shape != (model.K,) or np.any(w < 0) or not np.isclose(w.sum(), 1.0):
-        raise ValueError("weights must be a probability vector of length K")
+    if w.shape != (4,) or np.any(w < 0) or not np.isclose(w.sum(), 1.0):
+        raise ValueError("weights must be a four-component probability vector for k=0,1,2,3")
     prev = model.states[int(previous_state_id)]
     nxt_id = int(next_state_id)
     nxt_set = set(map(int, model.states[nxt_id]))
@@ -93,8 +93,8 @@ def transition_log_likelihood(model, context, weights):
     if not np.isin(X, [0, 1]).all() or not np.all(X.sum(axis=1) == model.K):
         raise ValueError("context must contain exact fixed-cardinality binary states")
     w = np.asarray(weights, dtype=float)
-    if w.shape != (model.K,) or np.any(w < 0) or not np.isclose(w.sum(), 1.0):
-        raise ValueError("weights must be a probability vector of length K")
+    if w.shape != (4,) or np.any(w < 0) or not np.isclose(w.sum(), 1.0):
+        raise ValueError("weights must be a four-component probability vector for k=0,1,2,3")
 
     ids = model.state_ids(X)
     group_masses = _conditional_group_masses(model)
