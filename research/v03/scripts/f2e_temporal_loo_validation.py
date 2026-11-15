@@ -142,6 +142,13 @@ def run_validation(root, output, lambdas, maxiter, grid_step,
         raise ValueError("At least three sequences are required for LOO validation")
 
     output.mkdir(parents=True, exist_ok=True)
+    contexts_path = root / "qwen_contexts_by_layer.npz"
+    alignment_path = root / "sequence_alignment.csv"
+    if not contexts_path.exists() or not alignment_path.exists():
+        raise FileNotFoundError("Missing routed-context NPZ or sequence-alignment CSV")
+    script_hash = sha256_file(Path(__file__))
+    contexts_hash = sha256_file(contexts_path)
+    alignment_hash = sha256_file(alignment_path)
     rows = []
     profile_rows = []
     selected_rows = []
@@ -301,6 +308,9 @@ def run_validation(root, output, lambdas, maxiter, grid_step,
         "screen_replicates": int(screen_replicates),
         "predictive_replicates": int(predictive_replicates),
         "seed": int(seed),
+        "loo_script_sha256": script_hash,
+        "contexts_sha256": contexts_hash,
+        "alignment_sha256": alignment_hash,
         "python": platform.python_version(),
         "numpy": np.__version__,
         "pandas": pd.__version__,
