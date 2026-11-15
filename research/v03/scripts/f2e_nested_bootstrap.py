@@ -13,6 +13,7 @@ import argparse, itertools, json, math, os, time, hashlib, platform, sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import scipy
 from scipy.optimize import minimize
 from scipy.special import logsumexp
 
@@ -491,6 +492,7 @@ def main():
         "dataset":"Salesforce/wikitext",
         "dataset_config":"wikitext-2-raw-v1",
         "dataset_split":"test",
+        "dataset_revision":"main",
         "routing_context":"layer_00",
         "experts":60,"top_k":4,"sequences":4,"tokens_per_sequence":256,
         "contexts_file":{"name":contexts_path.name,"sha256":contexts_sha},
@@ -499,7 +501,8 @@ def main():
         "temporal_loo_summary":loo_summary,
         "environment":{
             "python":platform.python_version(),
-            "numpy":np.__version__,"pandas":pd.__version__
+            "numpy":np.__version__,"pandas":pd.__version__,
+            "scipy":scipy.__version__
         },
         "configuration":run_config
     })
