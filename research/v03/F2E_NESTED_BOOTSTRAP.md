@@ -39,7 +39,7 @@ The predeclared family is:
 - pooled higher-order closed-concept count at 1%, 2%, 5% relative support;
 - mean per-sequence higher-order closed-concept count at 1%, 2%, 5% relative support.
 
-For an observed context X, an independent inner null sample estimates each metric's null mean and SD. The statistic is the maximum one-sided standardized excess over the non-degenerate metrics. The active family is fixed from the observed inner calibration and reused in every outer replicate. If a metric declared active becomes degenerate in an outer inner sample, that replicate is marked failed; it is not silently removed. Metrics constant in the observed inner calibration are reported separately.
+For an observed context X, an independent inner null sample estimates each metric's upper-tail probability using the plus-one Monte Carlo estimator p_j = (1 + #{inner null values >= observed value})/(M+1). The per-metric extremeness score is -log(p_j), and the global statistic is the maximum score across all six predeclared metrics. Ties count as exceedances. This construction remains defined when an inner null sample is constant: if the observation exceeds that constant support, its estimated tail probability is 1/(M+1); if it equals the constant value, its estimated tail probability is 1. No metric is dropped because its sample SD is zero. The same complete six-metric family and the same inner replicate count are used in every outer replicate. The outer bootstrap calibrates the complete statistic, including finite-inner-sample discreteness.
 
 ## Nested parametric bootstrap
 
@@ -50,7 +50,7 @@ For an observed context X, an independent inner null sample estimates each metri
 5. Re-select lambda by the same leave-one-chain-out CV; refit the pairwise model.
 6. Re-select temporal Gibbs weights using that outer context's lag profile.
 7. Generate an independent inner null sample from the outer refitted model and selected weights.
-8. Standardize the outer context's FCA metrics using its inner-null means/SDs and calculate its max-T statistic.
+8. Calculate the outer context's six empirical upper-tail probabilities against its independent inner-null sample, transform them to -log(p), and calculate the maximum score.
 9. Compare the observed max-T statistic with the outer max-T distribution. The plus-one Monte Carlo p-value is `(1 + # {T_b >= T_obs}) / (B + 1)`.
 
 This is a plug-in parametric bootstrap conditional on the chosen null family. It does not protect against arbitrary null-model misspecification. Four original text sequences are not enough to support broad corpus-level generalization.
@@ -115,5 +115,5 @@ Failed outer replicates are retained with an error field. The summary reports th
 
 ## Validation scope
 
-The unit tests cover: finite-difference gradient agreement, fixed-cardinality fit and state ranking, conditional Gibbs generation, exact Top-K preservation, exhaustive small-context FCA closure counts, and max-T active-family handling. Passing these tests validates implementation components; it does not validate the Qwen trace or imply the full bootstrap has run.
+The unit tests cover: finite-difference gradient agreement, fixed-cardinality fit and state ranking, conditional Gibbs generation, exact Top-K preservation, exhaustive small-context FCA closure counts, and empirical-tail max-statistic handling, including constant-null metrics. Passing these tests validates implementation components; it does not validate the Qwen trace or imply the full bootstrap has run.
 
