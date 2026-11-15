@@ -52,7 +52,7 @@ def write_sha256sums(root: Path):
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk)
             records.append(f"{digest.hexdigest()}  {path.relative_to(root).as_posix()}")
-    (root / "SHA256SUMS").write_text("\\n".join(records) + "\\n")
+    (root / "SHA256SUMS").write_text("\n".join(records) + "\n")
 
 
 def main():
