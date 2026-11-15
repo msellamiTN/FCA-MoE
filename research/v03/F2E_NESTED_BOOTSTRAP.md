@@ -55,6 +55,37 @@ For an observed context X, an independent inner null sample estimates each metri
 
 This is a plug-in parametric bootstrap conditional on the chosen null family. It does not protect against arbitrary null-model misspecification. Four original text sequences are not enough to support broad corpus-level generalization.
 
+## Temporal leave-one-sequence-out validation
+
+Before a confirmatory F2-E run, evaluate temporal predictive adequacy without using
+the held-out sequence to select either lambda or temporal weights:
+
+```bash
+python scripts/f2e_temporal_loo_validation.py \
+  --root "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1" \
+  --output "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1/sequence_replication/layer_00/temporal/loo_confirmatory" \
+  --lambdas 0.0003 0.001 0.003 --maxiter 400 \
+  --weight-grid-step 0.1 --screen-replicates 8 \
+  --predictive-replicates 200 --seed 20261120
+```
+
+For each held-out sequence, the script fits the pairwise model and selects temporal
+weights from the other sequences only. It evaluates exact conditional transition
+negative log likelihood on the held-out sequence for the training-selected kernel,
+IID, and the fixed 90/10 reference. It also records held-out lag-profile predictive
+discrepancies. The diagnostic is descriptive with four folds, not a hypothesis test.
+
+The current predeclared adequacy flag requires the mean selected-kernel held-out
+transition-NLL gain over IID to be positive and the selected kernel to outperform
+IID in at least three of four folds. If this diagnostic does not pass, do not treat
+the temporal null as validated; investigate model inadequacy before confirmatory
+F2-E inference.
+
+The transition likelihood uses the exact mixture probability
+`P(T|S)=sum_k w_k mean_{R subset S, |R|=k}[1(R subset T) pi(T)/pi(R)]`,
+with the k=0 term equal to pi(T). The first held-out state is conditioned on and
+omitted from the transition score.
+
 ## Install and validate in Colab
 
 Open `notebooks/FCA_MoE_F2E_Nested_Bootstrap.ipynb`. Mount Drive, clone this branch, install the v0.3 package, and run the tests. The notebook expects the existing trace files:
@@ -90,9 +121,12 @@ python scripts/f2e_nested_bootstrap.py \
 
 ```bash
 python scripts/f2e_nested_bootstrap.py \
+  --root "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1" \
+  --output "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1/sequence_replication/layer_00/temporal/f2e_confirmatory_v1" \
+  --temporal-loo-summary "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1/sequence_replication/layer_00/temporal/loo_confirmatory/loo_validation_summary.json" \
   --outer-replicates 999 --inner-replicates 100 \
   --screen-replicates 8 --weight-grid-step 0.1 \
-  --lambdas 0.0003 0.001 0.003 --maxiter 600 \
+  --lambdas 0.0003 0.001 0.003 --maxiter 400 \
   --checkpoint-every 1 --resume
 ```
 
@@ -106,9 +140,12 @@ Under `sequence_replication/layer_00/temporal/f2e_nested_bootstrap/`:
 - `observed_fit_and_selection.json`
 - `observed_model_parameters.npz` and `observed_lambda_cv.csv`
 - `observed_weight_screen.csv`
-- `observed_inner_calibration.json`
+- `frozen_manifest.json` (input and code hashes, model/data identity, environment)
+- `observed_inner_calibration.json` and `observed_inner_metrics.csv`
 - `outer_bootstrap_replicates.csv` (checkpointed after each outer replicate)
 - `outer_model_parameters/replicate_XXXX.npz` and `outer_fit_XXXX.json` (successful outer fits)
+- `outer_weight_screens/replicate_XXXX.csv` (complete temporal grid selection)
+- `outer_inner_metrics/replicate_XXXX.csv` and corresponding diagnostics (raw inner samples)
 - `f2e_nested_bootstrap_summary.json`
 
 Failed outer replicates are retained with an error field. The summary reports the success and failure counts. Any failed outer replicate invalidates confirmatory reporting until resolved. The script fingerprints the statistical configuration and refuses to resume a checkpoint with changed settings. Use separate output directories for pilot, diagnostic, and publication runs. A run with material fit/sampling failures is not inferentially acceptable.
