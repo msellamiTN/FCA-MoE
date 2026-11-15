@@ -161,9 +161,9 @@ Under `sequence_replication/layer_00/temporal/f2e_confirmatory_campaign_v1/`:
 - `campaign_manifest.json` (campaign stage and temporal LOO result)
 - `temporal_loo/` (fold selections, full weight screens, held-out transition likelihoods and lag profiles)
 - `nested_bootstrap/run_config.json` (immutable statistical-configuration fingerprint)
-- `observed_fit_and_selection.json`
-- `observed_model_parameters.npz` and `observed_lambda_cv.csv`
-- `observed_weight_screen.csv`
+- `nested_bootstrap/observed_fit_and_selection.json`
+- `nested_bootstrap/observed_model_parameters.npz` and `observed_lambda_cv.csv`
+- `nested_bootstrap/observed_weight_screen.csv`
 - `nested_bootstrap/frozen_manifest.json` (input and code hashes, model/data identity, environment)
 - `nested_bootstrap/observed_inner_calibration.json` and `observed_inner_metrics.csv`
 - `nested_bootstrap/outer_bootstrap_replicates.csv` (checkpointed after each outer replicate)
@@ -171,6 +171,7 @@ Under `sequence_replication/layer_00/temporal/f2e_confirmatory_campaign_v1/`:
 - `nested_bootstrap/outer_weight_screens/replicate_XXXX.csv` (complete temporal grid selection)
 - `nested_bootstrap/outer_inner_metrics/replicate_XXXX.csv` and corresponding diagnostics (raw inner samples)
 - `nested_bootstrap/f2e_nested_bootstrap_summary.json`
+- `SHA256SUMS` (newline-delimited SHA-256 checksums for all campaign files, excluding itself)
 
 Failed outer replicates are retained with an error field. The summary reports the success and failure counts. Any failed outer replicate invalidates confirmatory reporting until resolved. The script fingerprints the statistical configuration and refuses to resume a checkpoint with changed settings. Use separate output directories for pilot, diagnostic, and publication runs. A run with material fit/sampling failures is not inferentially acceptable.
 
