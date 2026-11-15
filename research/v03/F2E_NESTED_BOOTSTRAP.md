@@ -86,6 +86,29 @@ The transition likelihood uses the exact mixture probability
 with the k=0 term equal to pi(T). The first held-out state is conditioned on and
 omitted from the transition score.
 
+## Single-entry confirmatory campaign
+
+The recommended one-shot entry point runs the LOO temporal prerequisite first and
+launches F2-E only if the predeclared diagnostic passes. It also reuses a
+hash/configuration-matched completed LOO result when resuming an interrupted
+nested bootstrap:
+
+```bash
+python scripts/run_f2e_confirmatory_campaign.py \
+  --root "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1" \
+  --output-base "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1/sequence_replication/layer_00/temporal/f2e_confirmatory_campaign_v1" \
+  --outer-replicates 999 --inner-replicates 100 \
+  --screen-replicates 8 --weight-grid-step 0.1 \
+  --lambdas 0.0003 0.001 0.003 --maxiter 400 \
+  --predictive-replicates 200 --seed 20261120
+```
+
+After interruption, repeat the exact command with `--resume`. The runner reuses
+the LOO summary only if its script hash, input hashes, lambda grid, optimizer
+settings, weight grid, screening count, predictive count, and seed match. The
+nested bootstrap independently enforces its own immutable configuration
+fingerprint.
+
 ## Install and validate in Colab
 
 Open `notebooks/FCA_MoE_F2E_Nested_Bootstrap.ipynb`. Mount Drive, clone this branch, install the v0.3 package, and run the tests. The notebook expects the existing trace files:
@@ -120,33 +143,34 @@ python scripts/f2e_nested_bootstrap.py \
 ### Publication-oriented run
 
 ```bash
-python scripts/f2e_nested_bootstrap.py \
+python scripts/run_f2e_confirmatory_campaign.py \
   --root "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1" \
-  --output "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1/sequence_replication/layer_00/temporal/f2e_confirmatory_v1" \
-  --temporal-loo-summary "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1/sequence_replication/layer_00/temporal/loo_confirmatory/loo_validation_summary.json" \
+  --output-base "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1/sequence_replication/layer_00/temporal/f2e_confirmatory_campaign_v1" \
   --outer-replicates 999 --inner-replicates 100 \
   --screen-replicates 8 --weight-grid-step 0.1 \
   --lambdas 0.0003 0.001 0.003 --maxiter 400 \
-  --checkpoint-every 1 --resume
+  --predictive-replicates 200 --seed 20261120
 ```
 
 The publication-oriented run is computationally substantial. Use a high-RAM Colab runtime, keep Drive mounted, and resume with identical arguments and seed after interruptions. Do not change the seed or configuration while resuming a checkpoint.
 
 ## Outputs
 
-Under `sequence_replication/layer_00/temporal/f2e_nested_bootstrap/`:
+Under `sequence_replication/layer_00/temporal/f2e_confirmatory_campaign_v1/`:
 
-- `run_config.json` (immutable statistical-configuration fingerprint)
+- `campaign_manifest.json` (campaign stage and temporal LOO result)
+- `temporal_loo/` (fold selections, full weight screens, held-out transition likelihoods and lag profiles)
+- `nested_bootstrap/run_config.json` (immutable statistical-configuration fingerprint)
 - `observed_fit_and_selection.json`
 - `observed_model_parameters.npz` and `observed_lambda_cv.csv`
 - `observed_weight_screen.csv`
-- `frozen_manifest.json` (input and code hashes, model/data identity, environment)
-- `observed_inner_calibration.json` and `observed_inner_metrics.csv`
-- `outer_bootstrap_replicates.csv` (checkpointed after each outer replicate)
-- `outer_model_parameters/replicate_XXXX.npz` and `outer_fit_XXXX.json` (successful outer fits)
-- `outer_weight_screens/replicate_XXXX.csv` (complete temporal grid selection)
-- `outer_inner_metrics/replicate_XXXX.csv` and corresponding diagnostics (raw inner samples)
-- `f2e_nested_bootstrap_summary.json`
+- `nested_bootstrap/frozen_manifest.json` (input and code hashes, model/data identity, environment)
+- `nested_bootstrap/observed_inner_calibration.json` and `observed_inner_metrics.csv`
+- `nested_bootstrap/outer_bootstrap_replicates.csv` (checkpointed after each outer replicate)
+- `nested_bootstrap/outer_model_parameters/replicate_XXXX.npz` and `outer_fit_XXXX.json`
+- `nested_bootstrap/outer_weight_screens/replicate_XXXX.csv` (complete temporal grid selection)
+- `nested_bootstrap/outer_inner_metrics/replicate_XXXX.csv` and corresponding diagnostics (raw inner samples)
+- `nested_bootstrap/f2e_nested_bootstrap_summary.json`
 
 Failed outer replicates are retained with an error field. The summary reports the success and failure counts. Any failed outer replicate invalidates confirmatory reporting until resolved. The script fingerprints the statistical configuration and refuses to resume a checkpoint with changed settings. Use separate output directories for pilot, diagnostic, and publication runs. A run with material fit/sampling failures is not inferentially acceptable.
 
