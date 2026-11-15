@@ -44,6 +44,13 @@ Qwen references:
 - [Qwen1.5-MoE architecture description](https://qwenlm.github.io/blog/qwen-moe/)
 - [Transformers Qwen2-MoE implementation documentation](https://huggingface.co/docs/transformers/en/model_doc/qwen2_moe)
 
+## F2-E nested bootstrap
+
+The F2-E implementation adds a scalable fixed-cardinality E=60,K=4 pairwise-MaxEnt fitter, leave-one-sequence-out regularization selection, exact conditional Gibbs indexes, temporal-weight reselection, and a nested parametric-bootstrap test for the predeclared six-metric FCA family. It includes unit tests and a Drive-backed Colab notebook. The notebook pilot is software validation only; run the publication configuration before drawing inferential conclusions.
+
+- [F2-E design and execution protocol](F2E_NESTED_BOOTSTRAP.md)
+- [F2-E nested-bootstrap Colab notebook](notebooks/FCA_MoE_F2E_Nested_Bootstrap.ipynb)
+
 ## Colab notebooks
 
 1. [Real GPT-OSS-20B routing extraction](notebooks/GPT_OSS_20B_Real_Routing_Extraction.ipynb) — hardware preflight, Drive mount, model instrumentation, 4-chunk pilot and resumable Parquet output.
