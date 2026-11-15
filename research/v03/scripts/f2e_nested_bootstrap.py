@@ -300,32 +300,68 @@ def select_weights(model, target_profile, target_pair, grid_step=.1, screen_repl
 
 
 def max_t_from_inner(observed_metrics, inner_metrics, active_family=None):
-    """Studentize observed FCA counts using an independent inner-null sample.
+    """Compute a selection-aware max empirical-tail score over all six metrics.
 
-    The inner sample estimates each metric's null mean and SD. It is NOT reused
-    as a reference distribution for its own standardized residuals; the outer
-    bootstrap supplies the reference distribution for the global statistic.
+    A zero-variance inner sample is not grounds for dropping a metric. For each
+    predeclared metric j, estimate its upper-tail probability with the
+    plus-one Monte Carlo estimator:
+        p_j = (1 + #{inner replicate: T_j^null >= T_j^obs}) / (M + 1).
+    Transform to a common extremeness score -log(p_j), then take the maximum.
+    This remains defined when the sampled null is constant and the observation
+    lies above its support. The outer bootstrap calibrates this complete
+    statistic, including finite-inner-sample discreteness.
+
+    Ties count as exceedances (conservative). All six metrics remain in the
+    family in every outer replicate; active_family is accepted only as a
+    consistency check for older callers.
     """
-    means={n:float(np.mean([r[n] for r in inner_metrics])) for n in FAMILY}
-    sds={n:float(np.std([r[n] for r in inner_metrics],ddof=1)) for n in FAMILY}
-    if active_family is None:
-        active=[n for n in FAMILY if sds[n] > 1e-12]
-    else:
-        active=list(active_family)
-        bad=[n for n in active if sds[n] <= 1e-12]
-        if bad: raise RuntimeError(f"Inner null is degenerate for predeclared active metrics: {bad}")
-    constants=[n for n in FAMILY if n not in active]
-    if not active: raise RuntimeError("All predeclared FCA metrics are degenerate in the inner null sample")
-    zobs={n:(float(observed_metrics[n])-means[n])/sds[n] for n in active}
-    constant_checks={n:{"null_constant":means[n],"observed":float(observed_metrics[n]),
-                        "observed_exceeds":bool(observed_metrics[n]>means[n])}
-                     for n in constants}
-    if active_family is None and any(v["observed_exceeds"] for v in constant_checks.values()):
-        raise RuntimeError(f"Observed metric exceeds a degenerate null support; cannot exclude it from max-T: {constant_checks}")
-    return {"max_t":max(zobs.values()) if zobs else None,"z":zobs,
-            "means":means,"sds":sds,"active":active,"constant":constants,
-            "constant_checks":constant_checks}
-
+    if active_family is not None and list(active_family) != list(FAMILY):
+        raise RuntimeError(
+            "F2-E empirical-tail max statistic requires the complete fixed "
+            f"six-metric family; received {list(active_family)}"
+        )
+    if not inner_metrics:
+        raise ValueError("inner_metrics must contain at least one null replicate")
+    means = {n: float(np.mean([r[n] for r in inner_metrics])) for n in FAMILY}
+    sds = {n: float(np.std([r[n] for r in inner_metrics], ddof=1))
+           if len(inner_metrics) > 1 else 0.0 for n in FAMILY}
+    tail = {}
+    constant_checks = {}
+    for n in FAMILY:
+        obs = float(observed_metrics[n])
+        null_values = np.asarray([float(r[n]) for r in inner_metrics])
+        exceedances = int(np.sum(null_values >= obs))
+        p_plus_one = float((1 + exceedances) / (len(null_values) + 1))
+        tail[n] = {
+            "observed": obs,
+            "null_mean": means[n],
+            "null_sd": sds[n],
+            "null_min": float(null_values.min()),
+            "null_max": float(null_values.max()),
+            "exceedances_ge": exceedances,
+            "inner_replicates": int(len(null_values)),
+            "p_plus_one": p_plus_one,
+            "extremeness_score": float(-math.log(p_plus_one)),
+        }
+        if sds[n] <= 1e-12:
+            constant_checks[n] = {
+                "null_constant": means[n],
+                "observed": obs,
+                "observed_exceeds": bool(obs > means[n]),
+                "handled_by_empirical_tail": True,
+            }
+    scores = {n: tail[n]["extremeness_score"] for n in FAMILY}
+    return {
+        "max_t": max(scores.values()),
+        "z": scores,  # compatibility key; values are -log empirical tail p, not z-scores
+        "tail": tail,
+        "means": means,
+        "sds": sds,
+        "active": list(FAMILY),
+        "constant": list(constant_checks),
+        "constant_checks": constant_checks,
+        "statistic": "maximum_negative_log_plus_one_empirical_upper_tail_probability",
+    }
 
 def load_observed(root):
     npz=root/"qwen_contexts_by_layer.npz"; align=root/"sequence_alignment.csv"
