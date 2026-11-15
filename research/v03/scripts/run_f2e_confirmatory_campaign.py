@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -28,6 +29,30 @@ import f2e_temporal_loo_validation as loo
 def save_json(path: Path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, allow_nan=False))
+
+
+def git_commit_sha():
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        return None
+
+
+def write_sha256sums(root: Path):
+    from hashlib import sha256
+    records = []
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and path.name != "SHA256SUMS":
+            digest = sha256()
+            with open(path, "rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            records.append(f"{digest.hexdigest()}  {path.relative_to(root).as_posix()}")
+    (root / "SHA256SUMS").write_text("\\n".join(records) + "\\n")
 
 
 def main():
@@ -128,6 +153,7 @@ def main():
 
     loo_pass = bool(loo_result.get("predeclared_loo_diagnostic_pass") is True)
     save_json(campaign_manifest, {
+        "git_commit_sha": git_commit_sha(),
         "stage": "temporal_loo_completed",
         "status": "temporal_loo_passed" if loo_pass else "stopped_temporal_loo_failed",
         "root": str(root),
@@ -185,6 +211,7 @@ def main():
         raise RuntimeError("Nested bootstrap returned without writing its summary")
     bootstrap_result = json.loads(summary_path.read_text())
     campaign_result = {
+        "git_commit_sha": git_commit_sha(),
         "stage": "nested_bootstrap_completed",
         "status": bootstrap_result.get("status"),
         "inferential_status": bootstrap_result.get("inferential_status"),
@@ -194,6 +221,7 @@ def main():
         "python": platform.python_version(),
     }
     save_json(campaign_manifest, campaign_result)
+    write_sha256sums(base)
     print(json.dumps(campaign_result, indent=2), flush=True)
 
     if bootstrap_result.get("inferential_status") != "ready_for_review":
