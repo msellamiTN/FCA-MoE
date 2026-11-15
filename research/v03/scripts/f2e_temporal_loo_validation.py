@@ -34,6 +34,52 @@ from f2e_nested_bootstrap import (
 )
 
 
+def _conditional_group_masses(model):
+    masses = {}
+    for k in (1, 2, 3):
+        q = model.cond[k]
+        values = np.empty(len(q["starts"]), dtype=np.float64)
+        for g, (a, b) in enumerate(zip(q["starts"], q["ends"])):
+            values[g] = float(model.prob[q["ids"][int(a):int(b)]].sum())
+        masses[k] = values
+    return masses
+
+
+def transition_probability(model, previous_state_id, next_state_id, weights,
+                           group_masses=None):
+    """Exact P(next_state | previous_state) for the conditional Gibbs mixture."""
+    w = np.asarray(weights, dtype=float)
+    if w.shape != (model.K,) or np.any(w < 0) or not np.isclose(w.sum(), 1.0):
+        raise ValueError("weights must be a probability vector of length K")
+    prev = model.states[int(previous_state_id)]
+    nxt_id = int(next_state_id)
+    nxt_set = set(map(int, model.states[nxt_id]))
+    probability = float(w[0] * model.prob[nxt_id])
+    if group_masses is None:
+        group_masses = _conditional_group_masses(model)
+
+    for k in (1, 2, 3):
+        if w[k] == 0:
+            continue
+        q = model.cond[k]
+        subset_total = math.comb(model.K, k)
+        contribution = 0.0
+        for positions in itertools.combinations(range(model.K), k):
+            retained = tuple(int(prev[p]) for p in positions)
+            if not all(x in nxt_set for x in retained):
+                continue
+            group = q["lookup"].get(model._mask(retained))
+            if group is None:
+                raise RuntimeError(f"Missing conditional group for {retained}")
+            conditional_mass = float(group_masses[k][group])
+            if conditional_mass <= 0 or not np.isfinite(conditional_mass):
+                raise RuntimeError("Invalid conditional stationary mass")
+            contribution += float(model.prob[nxt_id]) / conditional_mass
+        probability += float(w[k]) * contribution / subset_total
+
+    return probability
+
+
 def transition_log_likelihood(model, context, weights):
     """Exact conditional log likelihood of observed transitions under the kernel.
 
@@ -51,53 +97,28 @@ def transition_log_likelihood(model, context, weights):
         raise ValueError("weights must be a probability vector of length K")
 
     ids = model.state_ids(X)
-    states = model.states
-    log_probs = []
+    group_masses = _conditional_group_masses(model)
+    values = []
     for t in range(1, len(ids)):
-        prev = states[int(ids[t - 1])]
-        nxt_id = int(ids[t])
-        nxt = states[nxt_id]
-        nxt_set = set(map(int, nxt))
-        transition_probability = float(w[0] * model.prob[nxt_id])
-
-        for k in (1, 2, 3):
-            if w[k] == 0:
-                continue
-            q = model.cond[k]
-            subset_total = math.comb(model.K, k)
-            contribution = 0.0
-            for positions in itertools.combinations(range(model.K), k):
-                retained = tuple(int(prev[p]) for p in positions)
-                if not all(x in nxt_set for x in retained):
-                    continue
-                group = q["lookup"].get(model._mask(retained))
-                if group is None:
-                    raise RuntimeError(f"Missing conditional group for {retained}")
-                a = int(q["starts"][group])
-                b = int(q["ends"][group])
-                conditional_mass = float(model.prob[q["ids"][a:b]].sum())
-                if conditional_mass <= 0 or not np.isfinite(conditional_mass):
-                    raise RuntimeError("Invalid conditional stationary mass")
-                contribution += float(model.prob[nxt_id]) / conditional_mass
-            transition_probability += float(w[k]) * contribution / subset_total
-
-        if transition_probability <= 0 or not np.isfinite(transition_probability):
+        p = transition_probability(
+            model, int(ids[t - 1]), int(ids[t]), w,
+            group_masses=group_masses
+        )
+        if p <= 0 or not np.isfinite(p):
             raise RuntimeError(
-                f"Non-positive transition probability at position {t}: "
-                f"{transition_probability}"
+                f"Non-positive transition probability at position {t}: {p}"
             )
-        log_probs.append(math.log(transition_probability))
+        values.append(math.log(p))
 
-    if not log_probs:
+    if not values:
         raise ValueError("At least two observations are required")
-    values = np.asarray(log_probs, dtype=float)
+    values = np.asarray(values, dtype=float)
     return {
         "transitions": int(len(values)),
         "negative_log_likelihood": float(-values.sum()),
         "mean_transition_nll": float(-values.mean()),
         "mean_transition_log_likelihood": float(values.mean()),
     }
-
 
 def empirical_lag_profile(block):
     return np.asarray([
@@ -157,10 +178,6 @@ def run_validation(root, output, lambdas, maxiter, grid_step,
             if key not in unique:
                 unique[key] = weights
             names_to_key[name] = key
-
-        for name, key in names_to_key.items():
-            if name in ("iid", "fixed_90_10") and key in names_to_key.values():
-                pass
 
         test_profile = empirical_lag_profile(test)
         candidate_predictions = {}
