@@ -57,27 +57,29 @@ def test_cbo_counts_match_exhaustive_closure_oracle():
         assert np.array_equal(got["by_size"], expected)
 
 
-def test_weight_grid_and_max_t_active_family():
+def test_weight_grid_and_max_t_retains_degenerate_metrics():
     assert len(list(grid_weights(.5))) == 10
     inner = []
     for i in range(20):
         row = {name: float(i % 7) for name in FAMILY}
         row["pooled_higher_order_5pct"] = 0.0
+        row["mean_sequence_higher_order_5pct"] = 0.0
         inner.append(row)
     obs = {name: 10.0 for name in FAMILY}
     obs["pooled_higher_order_5pct"] = 0.0
+    # Observed sequence-level 5% metric exceeds a constant-zero inner sample.
+    obs["mean_sequence_higher_order_5pct"] = 0.25
     result = max_t_from_inner(obs, inner)
-    assert "pooled_higher_order_5pct" in result["constant"]
-    assert result["max_t"] is not None
-    # A metric declared active from the observed calibration may not silently
-    # become degenerate in an outer replicate.
-    try:
-        max_t_from_inner(obs, [{**r, "pooled_higher_order_1pct": 1.0} for r in inner],
-                         active_family=result["active"])
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("Expected a degenerate active metric to fail")
+    assert result["active"] == FAMILY
+    assert "mean_sequence_higher_order_5pct" in result["constant"]
+    diagnostic = result["tail"]["mean_sequence_higher_order_5pct"]
+    assert diagnostic["exceedances_ge"] == 0
+    assert diagnostic["p_plus_one"] == 1.0 / 21.0
+    assert np.isclose(diagnostic["extremeness_score"], -np.log(1.0 / 21.0))
+    assert result["tail"]["pooled_higher_order_5pct"]["p_plus_one"] == 1.0
+    # Every metric remains present when an outer replicate has a degenerate null.
+    outer = max_t_from_inner(obs, inner, active_family=result["active"])
+    assert set(outer["tail"]) == set(FAMILY)
 
 
 def test_pairwise_objective_gradient_finite_difference():
