@@ -271,13 +271,25 @@ def run_validation(root, output, lambdas, maxiter, grid_step,
     )
     summary.to_csv(output / "loo_candidate_summary.csv", index=False)
 
-    iid = summary.loc[summary.candidate == "iid", "mean_transition_nll"]
-    selected = summary.loc[
-        summary.candidate == "selected_on_training", "mean_transition_nll"
-    ]
+    fold_nll = result_df.pivot(
+        index="held_out_sequence",
+        columns="candidate",
+        values="mean_transition_nll"
+    )
     temporal_gain = None
-    if len(iid) == 1 and len(selected) == 1:
-        temporal_gain = float(iid.iloc[0] - selected.iloc[0])
+    folds_better_than_iid = None
+    if {"iid", "selected_on_training"}.issubset(fold_nll.columns):
+        fold_gains = (
+            fold_nll["iid"] - fold_nll["selected_on_training"]
+        ).to_numpy(dtype=float)
+        temporal_gain = float(np.mean(fold_gains))
+        folds_better_than_iid = int(np.sum(fold_gains > 0))
+    temporal_loo_pass = bool(
+        temporal_gain is not None
+        and temporal_gain > 0
+        and folds_better_than_iid is not None
+        and folds_better_than_iid >= 3
+    )
 
     manifest = {
         "status": "completed",
@@ -294,10 +306,12 @@ def run_validation(root, output, lambdas, maxiter, grid_step,
         "pandas": pd.__version__,
         "scipy": scipy.__version__,
         "mean_transition_nll_gain_selected_vs_iid": temporal_gain,
+        "folds_better_than_iid": folds_better_than_iid,
+        "predeclared_loo_diagnostic_pass": temporal_loo_pass,
+        "loo_rule": "mean held-out transition-NLL gain > 0 and selected temporal kernel beats IID in at least 3 of 4 folds",
         "interpretation": (
-            "Positive gain means the training-selected temporal kernel has "
-            "lower mean held-out transition NLL than IID. Four folds are "
-            "descriptive and do not establish broad generalization."
+            "This is a predictive adequacy diagnostic, not a hypothesis test. "
+            "Four folds are descriptive and do not establish broad generalization."
         ),
         "elapsed_seconds": None,
     }
