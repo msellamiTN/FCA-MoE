@@ -470,7 +470,9 @@ def main():
     obs_inner,obs_profiles,obs_pair=run_inner(model,weights,args.inner_replicates,args.seed+200000)
     obs_stat=max_t_from_inner(obs_metrics,obs_inner)
     save_json(out/"observed_inner_calibration.json",{
-        "observed_max_t":obs_stat["max_t"],"observed_z":obs_stat["z"],
+        "observed_max_t":obs_stat["max_t"],"observed_tail_scores":obs_stat["z"],
+        "observed_tail_diagnostics":obs_stat["tail"],
+        "statistic":obs_stat["statistic"],
         "inner_means":obs_stat["means"],"inner_sds":obs_stat["sds"],
         "active_metrics":obs_stat["active"],"constant_metrics":obs_stat["constant"],
         "constant_metric_checks":obs_stat["constant_checks"],
