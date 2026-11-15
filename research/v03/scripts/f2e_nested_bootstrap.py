@@ -9,7 +9,7 @@ repeat fitting, lambda selection, and temporal-weight selection.
 This is a research implementation, not a claim that the experiment has run.
 """
 from __future__ import annotations
-import argparse, itertools, json, math, os, time, hashlib
+import argparse, itertools, json, math, os, time, hashlib, platform, sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -404,6 +404,31 @@ def save_json(path,obj):
     path.write_text(json.dumps(obj,indent=2,allow_nan=False))
 
 
+def sha256_file(path):
+    h=hashlib.sha256()
+    with open(path,"rb") as stream:
+        for chunk in iter(lambda:stream.read(1024*1024),b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def weight_screen_frame(screen):
+    return pd.DataFrame([
+        {"candidate":i,"w0":float(r["weights"][0]),
+         "w1":float(r["weights"][1]),"w2":float(r["weights"][2]),
+         "w3":float(r["weights"][3]),"lag_rmse":float(r["lag_rmse"]),
+         "pair_rmse":float(r["pair_rmse"])}
+        for i,r in enumerate(screen)
+    ])
+
+
+def metric_rows_frame(rows):
+    return pd.DataFrame([
+        {"inner_replicate":i,**{k:float(v) for k,v in row.items()}}
+        for i,row in enumerate(rows)
+    ])
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root",default="/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1")
@@ -417,6 +442,8 @@ def main():
     ap.add_argument("--seed",type=int,default=20261120)
     ap.add_argument("--resume",action="store_true")
     ap.add_argument("--checkpoint-every",type=int,default=1)
+    ap.add_argument("--temporal-loo-summary",default=None,
+                    help="Completed leave-one-sequence-out temporal validation JSON; required for confirmatory runs.")
     args=ap.parse_args()
     if args.outer_replicates < 2: raise ValueError("Use at least two outer replicates; 999 recommended for final inference")
     if args.inner_replicates < 10: raise ValueError("Use at least 10 inner replicates; 100-300 recommended for final inference")
@@ -424,11 +451,58 @@ def main():
     if not args.lambdas or any(x <= 0 for x in args.lambdas): raise ValueError("All lambda candidates must be positive")
     root=Path(args.root); out=Path(args.output) if args.output else root/"sequence_replication/layer_00/temporal/f2e_nested_bootstrap"
     out.mkdir(parents=True,exist_ok=True)
+    contexts_path=root/"qwen_contexts_by_layer.npz"
+    alignment_path=root/"sequence_alignment.csv"
+    if not contexts_path.exists() or not alignment_path.exists():
+        raise FileNotFoundError("Missing qwen_contexts_by_layer.npz or sequence_alignment.csv")
+    script_sha=sha256_file(Path(__file__))
+    contexts_sha=sha256_file(contexts_path)
+    alignment_sha=sha256_file(alignment_path)
+    loo_summary=None
+    loo_summary_sha=None
+    loo_pass=False
+    if args.temporal_loo_summary:
+        loo_path=Path(args.temporal_loo_summary)
+        if not loo_path.exists():
+            raise FileNotFoundError(f"Temporal LOO summary not found: {loo_path}")
+        loo_summary=json.loads(loo_path.read_text())
+        loo_summary_sha=sha256_file(loo_path)
+        loo_pass=bool(
+            loo_summary.get("status")=="completed"
+            and loo_summary.get("predeclared_loo_diagnostic_pass") is True
+        )
+    if args.outer_replicates>=999 and not loo_pass:
+        raise RuntimeError(
+            "Confirmatory bootstrap blocked: completed temporal LOO validation "
+            "must pass the predeclared criterion (mean held-out transition-NLL "
+            "gain > 0 and selected temporal kernel better than IID in >=3/4 folds)."
+        )
     run_config={"root":str(root.resolve()),"outer_replicates":args.outer_replicates,
                 "inner_replicates":args.inner_replicates,"screen_replicates":args.screen_replicates,
                 "weight_grid_step":args.weight_grid_step,"lambdas":[float(x) for x in args.lambdas],
-                "maxiter":args.maxiter,"seed":args.seed}
+                "maxiter":args.maxiter,"seed":args.seed,
+                "script_sha256":script_sha,"contexts_sha256":contexts_sha,
+                "alignment_sha256":alignment_sha,
+                "temporal_loo_summary_sha256":loo_summary_sha}
     fingerprint=hashlib.sha256(json.dumps(run_config,sort_keys=True).encode()).hexdigest()
+    save_json(out/"frozen_manifest.json",{
+        "model":"Qwen/Qwen1.5-MoE-A2.7B",
+        "model_revision":"1a758c50ecb6350748b9ce0a99d2352fd9fc11c9",
+        "dataset":"Salesforce/wikitext",
+        "dataset_config":"wikitext-2-raw-v1",
+        "dataset_split":"test",
+        "routing_context":"layer_00",
+        "experts":60,"top_k":4,"sequences":4,"tokens_per_sequence":256,
+        "contexts_file":{"name":contexts_path.name,"sha256":contexts_sha},
+        "alignment_file":{"name":alignment_path.name,"sha256":alignment_sha},
+        "analysis_script_sha256":script_sha,
+        "temporal_loo_summary":loo_summary,
+        "environment":{
+            "python":platform.python_version(),
+            "numpy":np.__version__,"pandas":pd.__version__
+        },
+        "configuration":run_config
+    })
     config_path=out/"run_config.json"
     if config_path.exists():
         prior=json.loads(config_path.read_text())
@@ -468,6 +542,9 @@ def main():
 
     # Observed statistic uses an independent inner null sample.
     obs_inner,obs_profiles,obs_pair=run_inner(model,weights,args.inner_replicates,args.seed+200000)
+    metric_rows_frame(obs_inner).to_csv(out/"observed_inner_metrics.csv",index=False)
+    np.savez_compressed(out/"observed_inner_diagnostics.npz",
+                        lag_profiles=obs_profiles,pair_rmse=obs_pair)
     obs_stat=max_t_from_inner(obs_metrics,obs_inner)
     save_json(out/"observed_inner_calibration.json",{
         "observed_max_t":obs_stat["max_t"],"observed_tail_scores":obs_stat["z"],
@@ -507,12 +584,22 @@ def main():
             inner_b,profiles_b,pair_b=run_inner(mb,wb,args.inner_replicates,
                                                  args.seed+500000+b*1000)
             stat_b=max_t_from_inner(outer_metrics,inner_b,active_family=obs_stat["active"])
+            screen_dir=out/"outer_weight_screens"; screen_dir.mkdir(exist_ok=True)
+            weight_screen_frame(screenb).to_csv(
+                screen_dir/f"replicate_{b:04d}.csv",index=False)
+            inner_dir=out/"outer_inner_metrics"; inner_dir.mkdir(exist_ok=True)
+            metric_rows_frame(inner_b).to_csv(
+                inner_dir/f"replicate_{b:04d}.csv",index=False)
+            np.savez_compressed(
+                inner_dir/f"replicate_{b:04d}_diagnostics.npz",
+                lag_profiles=profiles_b,pair_rmse=pair_b)
             param_dir=out/"outer_model_parameters"; param_dir.mkdir(exist_ok=True)
             np.savez_compressed(param_dir/f"replicate_{b:04d}.npz",theta=mb.theta,
                                 fitted_pair_moments=mb.fitted_pair_moments,
                                 lambda_selected=np.asarray(lambdab),weights=wb)
             save_json(out/f"outer_fit_{b:04d}.json",{"lambda_cv":cvb,"fit":mb.fit_info,
-                      "selected_weights":wb.tolist(),"weight_screen_top10":[{"weights":x["weights"].tolist(),"lag_rmse":x["lag_rmse"],"pair_rmse":x["pair_rmse"]} for x in screenb[:10]]})
+                      "selected_weights":wb.tolist(),
+                      "weight_screen_file":f"outer_weight_screens/replicate_{b:04d}.csv"})
             row={"replicate":b,"status":"ok","lambda":lambdab,
                  "weights":json.dumps(wb.tolist()),"max_t":stat_b["max_t"],
                  "active_metrics":json.dumps(stat_b["active"]),
@@ -554,7 +641,10 @@ def main():
                 "null_envelope_pass":bool(obs_stat["max_t"]<=critical) if ready else None,
                 "publication_configuration_gate":publication_config,
                 "outer_max_t_mean":float(tvals.mean()),"outer_max_t_sd":float(tvals.std(ddof=1)) if len(tvals)>1 else None,
-                "family":FAMILY,"interpretation":"Nested parametric bootstrap conditional on the fitted pairwise-temporal null family; validity depends on adequacy of that family. Any failed outer replicate invalidates confirmatory reporting until resolved.",
+                "family":FAMILY,
+                "temporal_loo_validation":loo_summary,
+                "temporal_loo_precondition_passed":loo_pass,
+                "interpretation":"Nested parametric bootstrap conditional on the fitted pairwise-temporal null family; validity depends on adequacy of that family. Any failed outer replicate invalidates confirmatory reporting until resolved.",
                 "configuration":run_config,"configuration_fingerprint":fingerprint,
                 "elapsed_seconds":time.time()-t0}
     else:
