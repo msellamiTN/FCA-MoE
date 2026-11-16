@@ -1029,11 +1029,6 @@ def main():
                     progress_label=f"Outer {b + 1} temporal screen",
                 )
                 weight_screen_frame(screenb).to_csv(final_screen, index=False)
-                if partial_screen.exists():
-                    partial_screen.unlink()
-                sidecar = Path(str(partial_screen) + ".json")
-                if sidecar.exists():
-                    sidecar.unlink()
 
             # Persist the completed fit and temporal screen before inner simulations,
             # so an interrupted inner batch can resume without repeating screening.
@@ -1044,6 +1039,11 @@ def main():
                 "selected_weights": wb.tolist(),
                 "weight_screen_file": f"outer_weight_screens/replicate_{b:04d}.csv",
             })
+            if partial_screen.exists():
+                partial_screen.unlink()
+            sidecar = Path(str(partial_screen) + ".json")
+            if sidecar.exists():
+                sidecar.unlink()
             outer_metrics = mine_dataset(outer_blocks)
             inner_dir = out / "outer_inner_metrics"
             inner_dir.mkdir(exist_ok=True)
