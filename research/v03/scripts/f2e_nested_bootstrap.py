@@ -787,6 +787,9 @@ def main():
     ap.add_argument("--seed",type=int,default=20261120)
     ap.add_argument("--resume",action="store_true")
     ap.add_argument("--checkpoint-every",type=int,default=1)
+    ap.add_argument("--screen-checkpoint-every", type=int, default=25)
+    ap.add_argument("--inner-checkpoint-every", type=int, default=10)
+    ap.add_argument("--outer-chunk-size", type=int, default=25)
     ap.add_argument("--temporal-loo-summary",default=None,
                     help="Completed leave-one-sequence-out temporal validation JSON; required for confirmatory runs.")
     args=ap.parse_args()
@@ -870,28 +873,66 @@ def main():
         prof.append(p)
     obs_profile=np.mean(prof,axis=0)
 
-    t0=time.time(); model,lam,cv=fit_model(blocks,args.lambdas,args.maxiter)
-    target_pair=model.fitted_pair_moments
-    weights,screen=select_weights(model,obs_profile,target_pair,args.weight_grid_step,
-                                  args.screen_replicates,seed_base=args.seed+100000)
-    np.savez_compressed(out/"observed_model_parameters.npz", theta=model.theta,
-                        fitted_pair_moments=model.fitted_pair_moments,
-                        state_probabilities=model.prob, lambda_selected=np.asarray(lam))
-    pd.DataFrame([{**{"lambda":r["lambda"],"mean_validation_nll":r["mean_validation_nll"]},
-                   **{f"fold_{i}_nll":v for i,v in enumerate(r["fold_nll"])} } for r in cv]).to_csv(out/"observed_lambda_cv.csv",index=False)
-    pd.DataFrame([{"w0":r["weights"][0],"w1":r["weights"][1],"w2":r["weights"][2],"w3":r["weights"][3],
-                   "lag_rmse":r["lag_rmse"],"pair_rmse":r["pair_rmse"]} for r in screen]).to_csv(out/"observed_weight_screen.csv",index=False)
-    save_json(out/"observed_fit_and_selection.json",{
-        "lambda_selected":lam,"lambda_cv":cv,"fit":model.fit_info,
-        "weights_selected":weights.tolist(),"weight_screen_top10":[{"weights":x["weights"].tolist(),"lag_rmse":x["lag_rmse"],"pair_rmse":x["pair_rmse"]} for x in screen[:10]],
-        "observed_lag_profile":obs_profile.tolist(),"observed_metrics":obs_metrics,
-        "weight_grid_step":args.weight_grid_step,"screen_replicates":args.screen_replicates})
+    t0 = time.time()
+    print("Fitting observed pairwise MaxEnt model and selecting temporal kernel.", flush=True)
+    model, lam, cv = fit_model(blocks, args.lambdas, args.maxiter)
+    target_pair = model.fitted_pair_moments
+    observed_screen_path = out / "observed_weight_screen.partial.csv"
+    weights, screen = select_weights(
+        model, obs_profile, target_pair, args.weight_grid_step,
+        args.screen_replicates, seed_base=args.seed + 100000,
+        progress_path=observed_screen_path, resume=args.resume,
+        progress_every=args.screen_checkpoint_every,
+        progress_label="Observed temporal screen",
+    )
+    np.savez_compressed(
+        out / "observed_model_parameters.npz", theta=model.theta,
+        fitted_pair_moments=model.fitted_pair_moments,
+        state_probabilities=model.prob, lambda_selected=np.asarray(lam)
+    )
+    pd.DataFrame([
+        {"lambda": r["lambda"],
+         "mean_validation_nll": r["mean_validation_nll"],
+         **{f"fold_{i}_nll": v for i, v in enumerate(r["fold_nll"])}}
+        for r in cv
+    ]).to_csv(out / "observed_lambda_cv.csv", index=False)
+    pd.DataFrame([
+        {"w0": r["weights"][0], "w1": r["weights"][1],
+         "w2": r["weights"][2], "w3": r["weights"][3],
+         "lag_rmse": r["lag_rmse"], "pair_rmse": r["pair_rmse"]}
+        for r in screen
+    ]).to_csv(out / "observed_weight_screen.csv", index=False)
+    if observed_screen_path.exists():
+        observed_screen_path.unlink()
+    observed_sidecar = Path(str(observed_screen_path) + ".json")
+    if observed_sidecar.exists():
+        observed_sidecar.unlink()
+    save_json(out / "observed_fit_and_selection.json", {
+        "lambda_selected": lam, "lambda_cv": cv, "fit": model.fit_info,
+        "theta_sha256": _array_sha256(model.theta),
+        "weights_selected": weights.tolist(),
+        "weight_screen_top10": [
+            {"weights": x["weights"].tolist(), "lag_rmse": x["lag_rmse"],
+             "pair_rmse": x["pair_rmse"]} for x in screen[:10]
+        ],
+        "observed_lag_profile": obs_profile.tolist(),
+        "observed_metrics": obs_metrics,
+        "weight_grid_step": args.weight_grid_step,
+        "screen_replicates": args.screen_replicates,
+    })
 
-    # Observed statistic uses an independent inner null sample.
-    obs_inner,obs_profiles,obs_pair=run_inner(model,weights,args.inner_replicates,args.seed+200000)
-    metric_rows_frame(obs_inner).to_csv(out/"observed_inner_metrics.csv",index=False)
-    np.savez_compressed(out/"observed_inner_diagnostics.npz",
-                        lag_profiles=obs_profiles,pair_rmse=obs_pair)
+    # Observed statistic uses an independent, deterministic inner null sample.
+    obs_inner, obs_profiles, obs_pair = run_inner(
+        model, weights, args.inner_replicates, args.seed + 200000,
+        progress_path=out / "observed_inner_metrics.csv",
+        resume=args.resume,
+        checkpoint_every=args.inner_checkpoint_every,
+        progress_label="Observed inner null",
+    )
+    np.savez_compressed(
+        out / "observed_inner_diagnostics.npz",
+        lag_profiles=obs_profiles, pair_rmse=obs_pair
+    )
     obs_stat=max_t_from_inner(obs_metrics,obs_inner)
     save_json(out/"observed_inner_calibration.json",{
         "observed_max_t":obs_stat["max_t"],"observed_tail_scores":obs_stat["z"],
@@ -915,38 +956,82 @@ def main():
     for b in range(args.outer_replicates):
         if b in done: continue
         try:
+            print(f"Starting outer replicate {b + 1}/{args.outer_replicates}", flush=True)
             # Outer sample from the original fitted null.
-            outer_blocks,_=generate_dataset(model,weights,args.seed+300000+b)
-            # Refit pairwise MaxEnt and reselect regularization/temporal weights.
-            mb,lambdab,cvb=fit_model(outer_blocks,args.lambdas,args.maxiter)
-            prof_b=[]
-            for block in outer_blocks:
-                p=[float((block[:-lag]*block[lag:]).sum(axis=1).mean()) for lag in range(1,LAGS+1)]
-                prof_b.append(p)
-            target_prof_b=np.mean(prof_b,axis=0)
-            wb,screenb=select_weights(mb,target_prof_b,mb.fitted_pair_moments,
-                                      args.weight_grid_step,args.screen_replicates,
-                                      seed_base=args.seed+400000+b*10000)
-            outer_metrics=mine_dataset(outer_blocks)
-            inner_b,profiles_b,pair_b=run_inner(mb,wb,args.inner_replicates,
-                                                 args.seed+500000+b*1000)
-            stat_b=max_t_from_inner(outer_metrics,inner_b,active_family=obs_stat["active"])
-            screen_dir=out/"outer_weight_screens"; screen_dir.mkdir(exist_ok=True)
-            weight_screen_frame(screenb).to_csv(
-                screen_dir/f"replicate_{b:04d}.csv",index=False)
-            inner_dir=out/"outer_inner_metrics"; inner_dir.mkdir(exist_ok=True)
-            metric_rows_frame(inner_b).to_csv(
-                inner_dir/f"replicate_{b:04d}.csv",index=False)
+            outer_blocks, _ = generate_dataset(model, weights, args.seed + 300000 + b)
+            mb, lambdab, cvb = fit_model(outer_blocks, args.lambdas, args.maxiter)
+            prof_b = [[
+                float((block[:-lag] * block[lag:]).sum(axis=1).mean())
+                for lag in range(1, LAGS + 1)
+            ] for block in outer_blocks]
+            target_prof_b = np.mean(prof_b, axis=0)
+
+            screen_dir = out / "outer_weight_screens"
+            screen_dir.mkdir(exist_ok=True)
+            partial_screen = screen_dir / f"replicate_{b:04d}.partial.csv"
+            final_screen = screen_dir / f"replicate_{b:04d}.csv"
+            outer_fit_path = out / f"outer_fit_{b:04d}.json"
+            theta_hash = _array_sha256(mb.theta)
+            reuse_screen = False
+            if args.resume and final_screen.exists() and outer_fit_path.exists():
+                cached_fit = json.loads(outer_fit_path.read_text())
+                if cached_fit.get("theta_sha256") == theta_hash:
+                    wb = np.asarray(cached_fit["selected_weights"], dtype=float)
+                    frame = pd.read_csv(final_screen)
+                    screenb = [{
+                        "weights": np.array([
+                            item["w0"], item["w1"], item["w2"], item["w3"]
+                        ], dtype=float),
+                        "lag_rmse": float(item["lag_rmse"]),
+                        "pair_rmse": float(item["pair_rmse"]),
+                    } for item in frame.to_dict("records")]
+                    reuse_screen = True
+                    print(f"Outer {b + 1}: reusing completed weight screen.", flush=True)
+            if not reuse_screen:
+                wb, screenb = select_weights(
+                    mb, target_prof_b, mb.fitted_pair_moments,
+                    args.weight_grid_step, args.screen_replicates,
+                    seed_base=args.seed + 400000 + b * 10000,
+                    progress_path=partial_screen, resume=args.resume,
+                    progress_every=args.screen_checkpoint_every,
+                    progress_label=f"Outer {b + 1} temporal screen",
+                )
+                weight_screen_frame(screenb).to_csv(final_screen, index=False)
+                if partial_screen.exists():
+                    partial_screen.unlink()
+                sidecar = Path(str(partial_screen) + ".json")
+                if sidecar.exists():
+                    sidecar.unlink()
+
+            outer_metrics = mine_dataset(outer_blocks)
+            inner_dir = out / "outer_inner_metrics"
+            inner_dir.mkdir(exist_ok=True)
+            inner_path = inner_dir / f"replicate_{b:04d}.csv"
+            inner_b, profiles_b, pair_b = run_inner(
+                mb, wb, args.inner_replicates, args.seed + 500000 + b * 1000,
+                progress_path=inner_path, resume=args.resume,
+                checkpoint_every=args.inner_checkpoint_every,
+                progress_label=f"Outer {b + 1} inner null",
+            )
+            stat_b = max_t_from_inner(
+                outer_metrics, inner_b, active_family=obs_stat["active"]
+            )
+            param_dir = out / "outer_model_parameters"
+            param_dir.mkdir(exist_ok=True)
             np.savez_compressed(
-                inner_dir/f"replicate_{b:04d}_diagnostics.npz",
-                lag_profiles=profiles_b,pair_rmse=pair_b)
-            param_dir=out/"outer_model_parameters"; param_dir.mkdir(exist_ok=True)
-            np.savez_compressed(param_dir/f"replicate_{b:04d}.npz",theta=mb.theta,
-                                fitted_pair_moments=mb.fitted_pair_moments,
-                                lambda_selected=np.asarray(lambdab),weights=wb)
-            save_json(out/f"outer_fit_{b:04d}.json",{"lambda_cv":cvb,"fit":mb.fit_info,
-                      "selected_weights":wb.tolist(),
-                      "weight_screen_file":f"outer_weight_screens/replicate_{b:04d}.csv"})
+                param_dir / f"replicate_{b:04d}.npz", theta=mb.theta,
+                fitted_pair_moments=mb.fitted_pair_moments,
+                lambda_selected=np.asarray(lambdab), weights=wb
+            )
+            save_json(outer_fit_path, {
+                "lambda_cv": cvb, "fit": mb.fit_info,
+                "theta_sha256": theta_hash, "selected_weights": wb.tolist(),
+                "weight_screen_file": f"outer_weight_screens/replicate_{b:04d}.csv",
+            })
+            np.savez_compressed(
+                inner_dir / f"replicate_{b:04d}_diagnostics.npz",
+                lag_profiles=profiles_b, pair_rmse=pair_b
+            )
             row={"replicate":b,"status":"ok","lambda":lambdab,
                  "weights":json.dumps(wb.tolist()),"max_t":stat_b["max_t"],
                  "active_metrics":json.dumps(stat_b["active"]),
@@ -962,9 +1047,35 @@ def main():
             records.append(row)
         except Exception as e:
             records.append({"replicate":b,"status":"failed","error":repr(e)})
-        if (b+1)%args.checkpoint_every==0 or b+1==args.outer_replicates:
-            pd.DataFrame(records).sort_values("replicate").to_csv(csv,index=False)
-            print(f"Outer bootstrap {b+1}/{args.outer_replicates}; successful={sum(r.get('status')=='ok' for r in records)}; failed={sum(r.get('status')=='failed' for r in records)}",flush=True)
+        if (b + 1) % args.checkpoint_every == 0 or b + 1 == args.outer_replicates:
+            checkpoint_frame = pd.DataFrame(records).sort_values("replicate")
+            checkpoint_frame.to_csv(csv, index=False)
+            chunk_size = max(1, int(args.outer_chunk_size))
+            if (b + 1) % chunk_size == 0 or b + 1 == args.outer_replicates:
+                chunk_dir = out / "outer_chunks"
+                chunk_dir.mkdir(exist_ok=True)
+                first = (b // chunk_size) * chunk_size
+                chunk = checkpoint_frame[
+                    (checkpoint_frame["replicate"] >= first)
+                    & (checkpoint_frame["replicate"] <= b)
+                ]
+                chunk.to_csv(
+                    chunk_dir / f"outer_{first:04d}_{b:04d}.csv", index=False
+                )
+            save_json(out / "progress.json", {
+                "stage": "outer_bootstrap",
+                "last_replicate_completed": b,
+                "outer_requested": args.outer_replicates,
+                "successful": int(sum(r.get("status") == "ok" for r in records)),
+                "failed": int(sum(r.get("status") == "failed" for r in records)),
+                "updated_unix_time": time.time(),
+            })
+            print(
+                f"Outer bootstrap {b+1}/{args.outer_replicates}; "
+                f"successful={sum(r.get('status')=='ok' for r in records)}; "
+                f"failed={sum(r.get('status')=='failed' for r in records)}",
+                flush=True,
+            )
 
     ok=[r for r in records if r.get("status")=="ok"]
     tvals=np.asarray([r["max_t"] for r in ok if np.isfinite(r["max_t"])],float)
