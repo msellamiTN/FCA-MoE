@@ -57,6 +57,55 @@ def test_cbo_counts_match_exhaustive_closure_oracle():
         assert np.array_equal(got["by_size"], expected)
 
 
+def test_multi_threshold_fca_matches_separate_exact_mining():
+    rng = np.random.default_rng(20261116)
+    for _ in range(30):
+        n = int(rng.integers(12, 40))
+        m = int(rng.integers(4, 10))
+        X = (rng.random((n, m)) < rng.uniform(.2, .8)).astype(np.uint8)
+        supports = sorted(set([
+            max(1, int(np.ceil(.1 * n))),
+            max(1, int(np.ceil(.25 * n))),
+            max(1, int(np.ceil(.5 * n))),
+        ]))
+        combined = FCA.mine_multi_threshold(X, supports)
+        for support in supports:
+            separate = FCA.mine(X, support)
+            assert combined[support]["higher"] == separate["higher"]
+            assert combined[support]["triplets"] == int(separate["by_size"][3])
+            expected_quads = int(separate["by_size"][4]) if m >= 4 else 0
+            assert combined[support]["quadruplets"] == expected_quads
+
+
+def test_cached_state_structures_are_shared_and_subset_maps_are_exact():
+    first = ConditionalPairwiseMaxEnt(8, 3)
+    second = ConditionalPairwiseMaxEnt(8, 3)
+    assert first.states is second.states
+    assert first.state_pair is second.state_pair
+
+    rng = np.random.default_rng(91)
+    ids = rng.integers(0, len(first.states), size=200)
+    X = np.zeros((len(ids), 8), dtype=np.uint8)
+    X[np.arange(len(ids))[:, None], first.states[ids]] = 1
+    first.fit(X, lam=.03, maxiter=500).build_conditional_indexes()
+
+    for k in (1, 2, 3):
+        positions = list(itertools.combinations(range(first.K), k))
+        q = first.cond[k]
+        group_map = first.subset_group_ids[k]
+        for state_id in (0, 1, len(first.states) // 2, len(first.states) - 1):
+            for col, pos in enumerate(positions):
+                retained = first.states[state_id, list(pos)]
+                group = int(group_map[state_id, col])
+                mask = first._mask(retained)
+                assert q["lookup"][mask] == group
+                a, b = int(q["starts"][group]), int(q["ends"][group])
+                assert np.all([
+                    all(x in set(first.states[state]) for x in retained)
+                    for state in q["ids"][a:b]
+                ])
+
+
 def test_weight_grid_and_max_t_retains_degenerate_metrics():
     assert len(list(grid_weights(.5))) == 10
     inner = []
