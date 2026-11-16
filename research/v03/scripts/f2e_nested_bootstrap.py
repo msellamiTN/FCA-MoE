@@ -450,21 +450,117 @@ def mine_dataset(blocks):
     return row
 
 
+def _array_sha256(array):
+    return hashlib.sha256(
+        np.ascontiguousarray(array).view(np.uint8)
+    ).hexdigest()
+
+
 def select_weights(model, target_profile, target_pair, grid_step=.1, screen_replicates=8,
-                   chains=4,length=256,seed_base=70000000):
-    rows=[]; candidates=list(grid_weights(grid_step))
-    for ci,w in enumerate(candidates):
-        profiles=[]; pair_errors=[]
-        for r in range(screen_replicates):
-            blocks,prof=generate_dataset(model,w,seed_base+ci*1000+r,chains,length)
-            profiles.append(prof)
-            X=np.vstack(blocks)
-            pm=model.empirical_pair_moments(X)
-            pair_errors.append(float(np.sqrt(np.mean((pm-target_pair)**2))))
-        mean=np.mean(profiles,axis=0)
-        rows.append({"weights":w,"lag_rmse":float(np.sqrt(np.mean((mean-target_profile)**2))),
-                     "pair_rmse":float(np.mean(pair_errors))})
-    rows.sort(key=lambda r:r["lag_rmse"])
+                   chains=4, length=256, seed_base=70000000,
+                   progress_path=None, resume=False, progress_every=25,
+                   progress_label="temporal weight screen"):
+    rows = []
+    candidates = list(grid_weights(grid_step))
+    signature = {
+        "grid_step": float(grid_step),
+        "screen_replicates": int(screen_replicates),
+        "chains": int(chains), "length": int(length),
+        "seed_base": int(seed_base),
+        "theta_sha256": _array_sha256(model.theta),
+        "target_profile_sha256": _array_sha256(np.asarray(target_profile)),
+        "target_pair_sha256": _array_sha256(np.asarray(target_pair)),
+    }
+    meta_path = Path(str(progress_path) + ".json") if progress_path is not None else None
+    start_candidate = 0
+    if progress_path is not None:
+        progress_path = Path(progress_path)
+        if meta_path.exists():
+            if not resume:
+                raise RuntimeError(
+                    f"Weight-screen checkpoint exists: {progress_path}; "
+                    "use --resume or a new output directory."
+                )
+            saved = json.loads(meta_path.read_text())
+            if saved.get("signature") != signature:
+                raise RuntimeError(
+                    f"Weight-screen checkpoint signature mismatch: {progress_path}"
+                )
+            if progress_path.exists():
+                partial = pd.read_csv(progress_path)
+                if len(partial) > len(candidates) or not np.array_equal(
+                    partial["candidate"].to_numpy(dtype=int),
+                    np.arange(len(partial)),
+                ):
+                    raise RuntimeError("Invalid weight-screen checkpoint ordering")
+                for item in partial.to_dict("records"):
+                    rows.append({
+                        "weights": np.array([
+                            item["w0"], item["w1"], item["w2"], item["w3"]
+                        ], dtype=float),
+                        "lag_rmse": float(item["lag_rmse"]),
+                        "pair_rmse": float(item["pair_rmse"]),
+                    })
+                start_candidate = len(rows)
+        else:
+            if progress_path.exists():
+                raise RuntimeError("Partial screen exists without its metadata sidecar")
+            meta_path.write_text(json.dumps({
+                "status": "running", "signature": signature,
+                "candidate_count": len(candidates), "completed_candidates": 0,
+            }, indent=2))
+
+    for ci in range(start_candidate, len(candidates)):
+        weights = candidates[ci]
+        profiles, pair_errors = [], []
+        for rep in range(screen_replicates):
+            blocks, profile = generate_dataset(
+                model, weights, seed_base + ci * 1000 + rep, chains, length
+            )
+            profiles.append(profile)
+            pair_moments = model.empirical_pair_moments(np.vstack(blocks))
+            pair_errors.append(float(np.sqrt(np.mean(
+                (pair_moments - target_pair) ** 2
+            ))))
+        mean_profile = np.mean(profiles, axis=0)
+        rows.append({
+            "weights": weights,
+            "lag_rmse": float(np.sqrt(np.mean(
+                (mean_profile - target_profile) ** 2
+            ))),
+            "pair_rmse": float(np.mean(pair_errors)),
+        })
+        completed = ci + 1
+        if progress_path is not None and (
+            completed % max(1, progress_every) == 0
+            or completed == len(candidates)
+        ):
+            partial_rows = [{
+                "candidate": i,
+                "w0": float(row["weights"][0]),
+                "w1": float(row["weights"][1]),
+                "w2": float(row["weights"][2]),
+                "w3": float(row["weights"][3]),
+                "lag_rmse": float(row["lag_rmse"]),
+                "pair_rmse": float(row["pair_rmse"]),
+            } for i, row in enumerate(rows)]
+            temporary = Path(str(progress_path) + ".tmp")
+            pd.DataFrame(partial_rows).to_csv(temporary, index=False)
+            temporary.replace(progress_path)
+            meta = json.loads(meta_path.read_text())
+            meta["completed_candidates"] = completed
+            meta_path.write_text(json.dumps(meta, indent=2))
+            print(
+                f"{progress_label}: {completed}/{len(candidates)} candidates",
+                flush=True,
+            )
+
+    rows.sort(key=lambda row: row["lag_rmse"])
+    if meta_path is not None and meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        meta["status"] = "completed"
+        meta["completed_candidates"] = len(candidates)
+        meta_path.write_text(json.dumps(meta, indent=2))
     return rows[0]["weights"], rows
 
 
@@ -557,15 +653,95 @@ def fit_model(blocks,lambdas,maxiter):
     return model,chosen,cv
 
 
-def run_inner(model,weights,n,seed_base,chains=4,length=256):
-    rows=[]; profiles=[]; pair_rmse=[]
-    target=model.fitted_pair_moments
-    for r in range(n):
-        blocks,prof=generate_dataset(model,weights,seed_base+r,chains,length)
-        row=mine_dataset(blocks); rows.append(row); profiles.append(prof)
-        pm=model.empirical_pair_moments(np.vstack(blocks))
-        pair_rmse.append(float(np.sqrt(np.mean((pm-target)**2))))
-    return rows,np.asarray(profiles),np.asarray(pair_rmse)
+def run_inner(model, weights, n, seed_base, chains=4, length=256,
+              progress_path=None, resume=False, checkpoint_every=10,
+              progress_label="inner null"):
+    rows, profiles, pair_rmse = [], [], []
+    target = model.fitted_pair_moments
+    signature = {
+        "n": int(n), "seed_base": int(seed_base),
+        "chains": int(chains), "length": int(length),
+        "theta_sha256": _array_sha256(model.theta),
+        "weights": np.asarray(weights, dtype=float).tolist(),
+    }
+    meta_path = (
+        Path(str(progress_path) + ".progress.json")
+        if progress_path is not None else None
+    )
+    diagnostics_path = (
+        Path(str(progress_path) + ".diagnostics.npz")
+        if progress_path is not None else None
+    )
+    start = 0
+    if progress_path is not None:
+        progress_path = Path(progress_path)
+        if meta_path.exists():
+            if not resume:
+                raise RuntimeError(
+                    f"Inner-null checkpoint exists: {progress_path}; "
+                    "use --resume or a new output directory."
+                )
+            meta = json.loads(meta_path.read_text())
+            if meta.get("signature") != signature:
+                raise RuntimeError(
+                    f"Inner-null checkpoint signature mismatch: {progress_path}"
+                )
+            if progress_path.exists() and diagnostics_path.exists():
+                frame = pd.read_csv(progress_path)
+                saved = np.load(diagnostics_path)
+                rows = [{
+                    key: float(value)
+                    for key, value in item.items()
+                    if key != "inner_replicate"
+                } for item in frame.to_dict("records")]
+                profiles = list(saved["lag_profiles"])
+                pair_rmse = list(saved["pair_rmse"])
+                if not (len(rows) == len(profiles) == len(pair_rmse)
+                        == int(meta.get("completed", -1))):
+                    raise RuntimeError("Inner-null checkpoint files disagree")
+                start = len(rows)
+                if meta.get("status") == "completed" and start == n:
+                    print(f"{progress_label}: reusing completed {n}/{n}", flush=True)
+                    return rows, np.asarray(profiles), np.asarray(pair_rmse)
+        else:
+            if progress_path.exists() or diagnostics_path.exists():
+                raise RuntimeError("Inner-null checkpoint files lack metadata")
+            meta_path.write_text(json.dumps({
+                "status": "running", "signature": signature, "completed": 0,
+            }, indent=2))
+
+    for rep in range(start, n):
+        blocks, profile = generate_dataset(
+            model, weights, seed_base + rep, chains, length
+        )
+        rows.append(mine_dataset(blocks))
+        profiles.append(profile)
+        pair_moments = model.empirical_pair_moments(np.vstack(blocks))
+        pair_rmse.append(float(np.sqrt(np.mean(
+            (pair_moments - target) ** 2
+        ))))
+        completed = rep + 1
+        if progress_path is not None and (
+            completed % max(1, checkpoint_every) == 0 or completed == n
+        ):
+            temporary = Path(str(progress_path) + ".tmp")
+            metric_rows_frame(rows).to_csv(temporary, index=False)
+            temporary.replace(progress_path)
+            diagnostic_tmp = Path(str(diagnostics_path) + ".tmp.npz")
+            np.savez_compressed(
+                diagnostic_tmp, lag_profiles=np.asarray(profiles),
+                pair_rmse=np.asarray(pair_rmse),
+            )
+            diagnostic_tmp.replace(diagnostics_path)
+            meta_path.write_text(json.dumps({
+                "status": "completed" if completed == n else "running",
+                "signature": signature, "completed": completed,
+            }, indent=2))
+            print(
+                f"{progress_label}: {completed}/{n} inner simulations",
+                flush=True,
+            )
+    return rows, np.asarray(profiles), np.asarray(pair_rmse)
 
 
 def save_json(path,obj):
