@@ -1003,6 +1003,13 @@ def main():
                 if sidecar.exists():
                     sidecar.unlink()
 
+            # Persist the completed fit and temporal screen before inner simulations,
+            # so an interrupted inner batch can resume without repeating screening.
+            save_json(outer_fit_path, {
+                "lambda_cv": cvb, "fit": mb.fit_info,
+                "theta_sha256": theta_hash, "selected_weights": wb.tolist(),
+                "weight_screen_file": f"outer_weight_screens/replicate_{b:04d}.csv",
+            })
             outer_metrics = mine_dataset(outer_blocks)
             inner_dir = out / "outer_inner_metrics"
             inner_dir.mkdir(exist_ok=True)
@@ -1023,11 +1030,6 @@ def main():
                 fitted_pair_moments=mb.fitted_pair_moments,
                 lambda_selected=np.asarray(lambdab), weights=wb
             )
-            save_json(outer_fit_path, {
-                "lambda_cv": cvb, "fit": mb.fit_info,
-                "theta_sha256": theta_hash, "selected_weights": wb.tolist(),
-                "weight_screen_file": f"outer_weight_screens/replicate_{b:04d}.csv",
-            })
             np.savez_compressed(
                 inner_dir / f"replicate_{b:04d}_diagnostics.npz",
                 lag_profiles=profiles_b, pair_rmse=pair_b
