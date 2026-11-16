@@ -215,8 +215,33 @@ def main():
         )
         raise SystemExit(2)
 
-    # Invoke the existing F2-E CLI in-process so its normal validation,
-    # fingerprinting, checkpoints, and output files remain authoritative.
+    save_json(campaign_manifest, {
+        "git_commit_sha": git_commit_sha(),
+        "stage": "nested_bootstrap_running",
+        "status": "running",
+        "root": str(root),
+        "output_base": str(base),
+        "temporal_loo_summary": str(loo_summary_path),
+        "temporal_loo_result": loo_result,
+        "temporal_loo_reused_from_cache": reused_loo,
+        "nested_bootstrap_output": str(bootstrap_dir),
+        "confirmatory_configuration": {
+            "outer_replicates": args.outer_replicates,
+            "inner_replicates": args.inner_replicates,
+            "screen_replicates": args.screen_replicates,
+            "weight_grid_step": args.weight_grid_step,
+            "lambdas": list(map(float, args.lambdas)),
+            "maxiter": args.maxiter,
+            "seed": args.seed,
+        },
+    })
+    print(
+        f"Launching nested bootstrap; output directory: {bootstrap_dir}",
+        flush=True,
+    )
+
+    # Invoke the F2-E CLI in-process so its validation, fingerprinting,
+    # resumable checkpoints, and output files remain authoritative.
     argv = [
         "f2e_nested_bootstrap.py",
         "--root", str(root),
