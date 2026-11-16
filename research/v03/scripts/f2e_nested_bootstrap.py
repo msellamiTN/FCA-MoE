@@ -878,13 +878,38 @@ def main():
     model, lam, cv = fit_model(blocks, args.lambdas, args.maxiter)
     target_pair = model.fitted_pair_moments
     observed_screen_path = out / "observed_weight_screen.partial.csv"
-    weights, screen = select_weights(
-        model, obs_profile, target_pair, args.weight_grid_step,
-        args.screen_replicates, seed_base=args.seed + 100000,
-        progress_path=observed_screen_path, resume=args.resume,
-        progress_every=args.screen_checkpoint_every,
-        progress_label="Observed temporal screen",
-    )
+    observed_final_screen = out / "observed_weight_screen.csv"
+    observed_fit_path = out / "observed_fit_and_selection.json"
+    theta_hash = _array_sha256(model.theta)
+    reuse_observed_screen = False
+    if args.resume and observed_final_screen.exists() and observed_fit_path.exists():
+        cached_observed = json.loads(observed_fit_path.read_text())
+        if (
+            cached_observed.get("theta_sha256") == theta_hash
+            and cached_observed.get("target_profile_sha256")
+            == _array_sha256(obs_profile)
+            and cached_observed.get("target_pair_sha256")
+            == _array_sha256(target_pair)
+        ):
+            weights = np.asarray(cached_observed["weights_selected"], dtype=float)
+            frame = pd.read_csv(observed_final_screen)
+            screen = [{
+                "weights": np.array([
+                    item["w0"], item["w1"], item["w2"], item["w3"]
+                ], dtype=float),
+                "lag_rmse": float(item["lag_rmse"]),
+                "pair_rmse": float(item["pair_rmse"]),
+            } for item in frame.to_dict("records")]
+            reuse_observed_screen = True
+            print("Reusing completed observed temporal screen.", flush=True)
+    if not reuse_observed_screen:
+        weights, screen = select_weights(
+            model, obs_profile, target_pair, args.weight_grid_step,
+            args.screen_replicates, seed_base=args.seed + 100000,
+            progress_path=observed_screen_path, resume=args.resume,
+            progress_every=args.screen_checkpoint_every,
+            progress_label="Observed temporal screen",
+        )
     np.savez_compressed(
         out / "observed_model_parameters.npz", theta=model.theta,
         fitted_pair_moments=model.fitted_pair_moments,
@@ -901,15 +926,12 @@ def main():
          "w2": r["weights"][2], "w3": r["weights"][3],
          "lag_rmse": r["lag_rmse"], "pair_rmse": r["pair_rmse"]}
         for r in screen
-    ]).to_csv(out / "observed_weight_screen.csv", index=False)
-    if observed_screen_path.exists():
-        observed_screen_path.unlink()
-    observed_sidecar = Path(str(observed_screen_path) + ".json")
-    if observed_sidecar.exists():
-        observed_sidecar.unlink()
-    save_json(out / "observed_fit_and_selection.json", {
+    ]).to_csv(observed_final_screen, index=False)
+    save_json(observed_fit_path, {
         "lambda_selected": lam, "lambda_cv": cv, "fit": model.fit_info,
-        "theta_sha256": _array_sha256(model.theta),
+        "theta_sha256": theta_hash,
+        "target_profile_sha256": _array_sha256(obs_profile),
+        "target_pair_sha256": _array_sha256(target_pair),
         "weights_selected": weights.tolist(),
         "weight_screen_top10": [
             {"weights": x["weights"].tolist(), "lag_rmse": x["lag_rmse"],
@@ -920,6 +942,12 @@ def main():
         "weight_grid_step": args.weight_grid_step,
         "screen_replicates": args.screen_replicates,
     })
+    # Remove the partial files only after the complete selection is durably saved.
+    if observed_screen_path.exists():
+        observed_screen_path.unlink()
+    observed_sidecar = Path(str(observed_screen_path) + ".json")
+    if observed_sidecar.exists():
+        observed_sidecar.unlink()
 
     # Observed statistic uses an independent, deterministic inner null sample.
     obs_inner, obs_profiles, obs_pair = run_inner(
