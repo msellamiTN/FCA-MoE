@@ -69,6 +69,11 @@ def main():
     parser.add_argument("--predictive-replicates", type=int, default=200)
     parser.add_argument("--seed", type=int, default=20261120)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--reuse-temporal-loo-summary",
+        default=None,
+        help="Reuse a completed, hash/configuration-matched temporal LOO summary from another campaign directory.",
+    )
     args = parser.parse_args()
 
     if args.outer_replicates < 999:
@@ -120,6 +125,10 @@ def main():
     reused_loo = False
     loo_result = None
 
+    cached_loo_path = (
+        Path(args.reuse_temporal_loo_summary).resolve()
+        if args.reuse_temporal_loo_summary else loo_summary_path
+    )
     if args.resume and loo_summary_path.exists():
         cached = json.loads(loo_summary_path.read_text())
         mismatches = {
@@ -138,6 +147,32 @@ def main():
         loo_result = cached
         reused_loo = True
         print("Reusing hash- and configuration-matched temporal LOO result.", flush=True)
+    elif args.reuse_temporal_loo_summary:
+        if not cached_loo_path.exists():
+            raise FileNotFoundError(
+                f"Requested reusable LOO summary does not exist: {cached_loo_path}"
+            )
+        cached = json.loads(cached_loo_path.read_text())
+        mismatches = {
+            key: {"cached": cached.get(key), "expected": value}
+            for key, value in expected_loo.items()
+            if cached.get(key) != value
+        }
+        if mismatches:
+            raise RuntimeError(
+                "Cannot reuse temporal LOO summary: its code/data/configuration "
+                f"does not match this campaign: {json.dumps(mismatches)}"
+            )
+        if cached.get("status") != "completed":
+            raise RuntimeError("Reusable temporal LOO summary is not complete")
+        loo_dir.mkdir(parents=True, exist_ok=True)
+        save_json(loo_summary_path, cached)
+        loo_result = cached
+        reused_loo = True
+        print(
+            "Reusing external hash- and configuration-matched temporal LOO result.",
+            flush=True,
+        )
     else:
         loo_dir.mkdir(parents=True, exist_ok=True)
         _, loo_result = loo.run_validation(
