@@ -334,6 +334,64 @@ def grid_weights(step):
 
 class FCA:
     @staticmethod
+    def mine_multi_threshold(X, minsups):
+        """Count closed concepts at multiple supports in one CbO traversal."""
+        X = np.asarray(X)
+        if X.ndim != 2 or not np.isin(X, [0, 1]).all():
+            raise ValueError("FCA context must be binary")
+        supports = sorted(set(int(s) for s in minsups))
+        if not supports or supports[0] < 1:
+            raise ValueError("minsups must contain positive support counts")
+        n, m = X.shape
+        cols = []
+        for j in range(m):
+            mask = 0
+            for i in np.flatnonzero(X[:, j]):
+                mask |= 1 << int(i)
+            cols.append(mask)
+        full = (1 << n) - 1
+        counts = {
+            support: {"higher": 0, "triplets": 0, "quadruplets": 0}
+            for support in supports
+        }
+
+        def closure(extent):
+            return tuple(
+                j for j, col in enumerate(cols)
+                if (extent & col) == extent
+            )
+
+        def record(intent, extent):
+            size = len(intent)
+            if size < 3:
+                return
+            extent_size = extent.bit_count()
+            for support in supports:
+                if extent_size >= support:
+                    counts[support]["higher"] += 1
+                    if size == 3:
+                        counts[support]["triplets"] += 1
+                    elif size == 4:
+                        counts[support]["quadruplets"] += 1
+
+        def visit(intent, extent, start):
+            record(intent, extent)
+            current = set(intent)
+            for j in range(start, m):
+                if j in current:
+                    continue
+                new_extent = extent & cols[j]
+                if new_extent.bit_count() < supports[0]:
+                    continue
+                new_intent = closure(new_extent)
+                if any(k < j and k not in current for k in new_intent):
+                    continue
+                visit(new_intent, new_extent, j + 1)
+
+        visit(closure(full), full, 0)
+        return counts
+
+    @staticmethod
     def mine(X,minsup):
         X=np.asarray(X)
         if X.ndim!=2 or not np.isin(X,[0,1]).all(): raise ValueError("FCA context must be binary")
@@ -361,15 +419,34 @@ class FCA:
 
 
 def mine_dataset(blocks):
-    pooled=np.vstack(blocks); row={}
-    for tag,frac in zip(TAGS,THRESHOLDS):
-        minp=max(1,int(math.ceil(frac*len(pooled)-1e-12)))
-        pooled_mined=FCA.mine(pooled,minp)
-        row[f"pooled_higher_order_{tag}"]=pooled_mined["higher"]
-        seq=[FCA.mine(b,max(1,int(math.ceil(frac*len(b)-1e-12))))["higher"] for b in blocks]
-        row[f"mean_sequence_higher_order_{tag}"]=float(np.mean(seq))
-        row[f"pooled_triplets_{tag}"]=pooled_mined["triplets"]
-        row[f"pooled_quadruplets_{tag}"]=pooled_mined["quadruplets"]
+    """Compute all support-threshold metrics with one traversal per context."""
+    pooled = np.vstack(blocks)
+    pooled_supports = [
+        max(1, int(math.ceil(frac * len(pooled) - 1e-12)))
+        for frac in THRESHOLDS
+    ]
+    pooled_results = FCA.mine_multi_threshold(pooled, pooled_supports)
+    sequence_supports = [
+        [
+            max(1, int(math.ceil(frac * len(block) - 1e-12)))
+            for frac in THRESHOLDS
+        ]
+        for block in blocks
+    ]
+    sequence_results = [
+        FCA.mine_multi_threshold(block, supports)
+        for block, supports in zip(blocks, sequence_supports)
+    ]
+    row = {}
+    for i, tag in enumerate(TAGS):
+        pooled_min = pooled_supports[i]
+        row[f"pooled_higher_order_{tag}"] = pooled_results[pooled_min]["higher"]
+        row[f"pooled_triplets_{tag}"] = pooled_results[pooled_min]["triplets"]
+        row[f"pooled_quadruplets_{tag}"] = pooled_results[pooled_min]["quadruplets"]
+        row[f"mean_sequence_higher_order_{tag}"] = float(np.mean([
+            result[supports[i]]["higher"]
+            for result, supports in zip(sequence_results, sequence_supports)
+        ]))
     return row
 
 
