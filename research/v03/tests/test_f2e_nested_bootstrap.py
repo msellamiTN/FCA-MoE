@@ -101,7 +101,9 @@ def test_cached_state_structures_are_shared_and_subset_maps_are_exact():
                 assert q["lookup"][mask] == group
                 a, b = int(q["starts"][group]), int(q["ends"][group])
                 subset_states = first.states[q["ids"][a:b]]
-                assert np.all(subset_states[:, list(pos)] == retained[None, :])
+                # Conditional groups retain the expert set, not its old slot positions.
+                for expert in retained:
+                    assert np.all(np.any(subset_states == expert, axis=1))
 
 
 def test_weight_grid_and_max_t_retains_degenerate_metrics():
