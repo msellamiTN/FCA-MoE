@@ -68,6 +68,9 @@ def main():
     parser.add_argument("--maxiter", type=int, default=400)
     parser.add_argument("--predictive-replicates", type=int, default=200)
     parser.add_argument("--seed", type=int, default=20261120)
+    parser.add_argument("--screen-checkpoint-every", type=int, default=25)
+    parser.add_argument("--inner-checkpoint-every", type=int, default=10)
+    parser.add_argument("--outer-chunk-size", type=int, default=25)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--reuse-temporal-loo-summary",
@@ -88,6 +91,12 @@ def main():
         raise ValueError("Provide at least three positive lambda candidates")
     if args.predictive_replicates < 100:
         raise ValueError("Use at least 100 LOO predictive replicates")
+    if args.screen_checkpoint_every < 1:
+        raise ValueError("--screen-checkpoint-every must be >= 1")
+    if args.inner_checkpoint_every < 1:
+        raise ValueError("--inner-checkpoint-every must be >= 1")
+    if args.outer_chunk_size < 1:
+        raise ValueError("--outer-chunk-size must be >= 1")
 
     root = Path(args.root).resolve()
     base = Path(args.output_base).resolve()
@@ -255,6 +264,9 @@ def main():
         "--maxiter", str(args.maxiter),
         "--seed", str(args.seed),
         "--checkpoint-every", "1",
+        "--screen-checkpoint-every", str(args.screen_checkpoint_every),
+        "--inner-checkpoint-every", str(args.inner_checkpoint_every),
+        "--outer-chunk-size", str(args.outer_chunk_size),
     ]
     if args.resume:
         argv.append("--resume")
