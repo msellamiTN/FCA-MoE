@@ -100,10 +100,8 @@ def test_cached_state_structures_are_shared_and_subset_maps_are_exact():
                 mask = first._mask(retained)
                 assert q["lookup"][mask] == group
                 a, b = int(q["starts"][group]), int(q["ends"][group])
-                assert np.all([
-                    all(x in set(first.states[state]) for x in retained)
-                    for state in q["ids"][a:b]
-                ])
+                subset_states = first.states[q["ids"][a:b]]
+                assert np.all(subset_states[:, list(pos)] == retained[None, :])
 
 
 def test_weight_grid_and_max_t_retains_degenerate_metrics():
