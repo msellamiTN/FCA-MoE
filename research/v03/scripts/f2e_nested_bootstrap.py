@@ -11,6 +11,7 @@ This is a research implementation, not a claim that the experiment has run.
 from __future__ import annotations
 import argparse, itertools, json, math, os, time, hashlib, platform, sys
 from pathlib import Path
+from functools import lru_cache
 import numpy as np
 import pandas as pd
 import scipy
@@ -44,14 +45,70 @@ def state_pair_indices(states, lut):
     return np.column_stack(cols).astype(np.int32, copy=False)
 
 
+@lru_cache(maxsize=4)
+def shared_state_and_transition_structure(E, K):
+    """Cache immutable state/pair/conditional-group structures across model fits."""
+    states = all_states(E, K)
+    pairs, lut = pair_index_table(E)
+    state_pair = state_pair_indices(states, lut)
+    base = np.arange(len(states), dtype=np.int32)
+    transition = {}
+    for k in (1, 2, 3):
+        positions = list(itertools.combinations(range(K), k))
+        key_parts, id_parts = [], []
+        for pos in positions:
+            vals = states[:, pos]
+            masks = np.zeros(len(vals), dtype=np.uint64)
+            for j in range(k):
+                masks |= np.left_shift(np.uint64(1), vals[:, j].astype(np.uint64))
+            key_parts.append(masks)
+            id_parts.append(base)
+        keys = np.concatenate(key_parts)
+        ids = np.concatenate(id_parts)
+        order = np.argsort(keys, kind="stable")
+        keys, ids = keys[order], ids[order]
+        uniq, starts, counts = np.unique(
+            keys, return_index=True, return_counts=True
+        )
+        ends = starts + counts
+        state_group_ids = np.empty((len(states), len(positions)), dtype=np.int32)
+        for col, pos in enumerate(positions):
+            vals = states[:, pos]
+            masks = np.zeros(len(vals), dtype=np.uint64)
+            for j in range(k):
+                masks |= np.left_shift(np.uint64(1), vals[:, j].astype(np.uint64))
+            group_ids = np.searchsorted(uniq, masks)
+            if not np.array_equal(uniq[group_ids], masks):
+                raise AssertionError("Missing retained-subset group")
+            state_group_ids[:, col] = group_ids.astype(np.int32)
+        lookup = {int(value): i for i, value in enumerate(uniq)}
+        for array in (keys, ids, uniq, starts, ends, state_group_ids):
+            array.setflags(write=False)
+        transition[k] = {
+            "keys": uniq, "starts": starts, "ends": ends, "ids": ids,
+            "lookup": lookup, "state_group_ids": state_group_ids,
+        }
+    for array in (states, state_pair, lut):
+        array.setflags(write=False)
+    return states, pairs, lut, state_pair, transition
+
+
 class ConditionalPairwiseMaxEnt:
     """Pairwise exponential family conditioned on exactly K active experts."""
     def __init__(self, E=60, K=4, states=None):
         self.E, self.K = int(E), int(K)
-        self.states = all_states(E, K) if states is None else np.asarray(states, np.int16)
-        self.pairs, self.lut = pair_index_table(E)
-        self.state_pair = state_pair_indices(self.states, self.lut)
+        if states is None:
+            (self.states, self.pairs, self.lut, self.state_pair,
+             self._transition_structure) = shared_state_and_transition_structure(
+                self.E, self.K
+            )
+        else:
+            self.states = np.asarray(states, np.int16)
+            self.pairs, self.lut = pair_index_table(self.E)
+            self.state_pair = state_pair_indices(self.states, self.lut)
+            self._transition_structure = None
         self.n_params = len(self.pairs)
+        self.subset_group_ids = None
         self.theta = None
         self.prob = None
         self.cdf = None
@@ -145,31 +202,53 @@ class ConditionalPairwiseMaxEnt:
         return min(int(np.searchsorted(self.cdf, rng.random(), side="right")), len(self.cdf)-1)
 
     def build_conditional_indexes(self):
-        """Build exact conditional CDFs for retaining 1,2,3 experts."""
+        """Build model-specific CDFs over cached conditional group structures."""
         self.cond = {}
+        self.subset_group_ids = {}
         for k in (1, 2, 3):
-            positions = list(itertools.combinations(range(self.K), k))
-            key_parts = []
-            id_parts = []
-            base = np.arange(len(self.states), dtype=np.int32)
-            for pos in positions:
-                vals = self.states[:, pos]
-                masks = np.zeros(len(vals), dtype=np.uint64)
-                for j in range(k): masks |= np.left_shift(np.uint64(1), vals[:, j].astype(np.uint64))
-                key_parts.append(masks); id_parts.append(base)
-            keys = np.concatenate(key_parts); ids = np.concatenate(id_parts)
-            order = np.argsort(keys, kind="stable"); keys, ids = keys[order], ids[order]
-            uniq, starts, counts = np.unique(keys, return_index=True, return_counts=True)
-            ends = starts + counts
+            if self._transition_structure is not None:
+                structure = self._transition_structure[k]
+                keys, starts, ends = structure["keys"], structure["starts"], structure["ends"]
+                ids, lookup = structure["ids"], structure["lookup"]
+                state_groups = structure["state_group_ids"]
+            else:
+                positions = list(itertools.combinations(range(self.K), k))
+                key_parts, id_parts = [], []
+                base = np.arange(len(self.states), dtype=np.int32)
+                for pos in positions:
+                    vals = self.states[:, pos]
+                    masks = np.zeros(len(vals), dtype=np.uint64)
+                    for j in range(k):
+                        masks |= np.left_shift(np.uint64(1), vals[:, j].astype(np.uint64))
+                    key_parts.append(masks)
+                    id_parts.append(base)
+                keys, ids = np.concatenate(key_parts), np.concatenate(id_parts)
+                order = np.argsort(keys, kind="stable")
+                keys, ids = keys[order], ids[order]
+                keys, starts, counts = np.unique(keys, return_index=True, return_counts=True)
+                ends = starts + counts
+                lookup = {int(v): i for i, v in enumerate(keys)}
+                state_groups = np.empty((len(self.states), len(positions)), dtype=np.int32)
+                for col, pos in enumerate(positions):
+                    vals = self.states[:, pos]
+                    masks = np.zeros(len(vals), dtype=np.uint64)
+                    for j in range(k):
+                        masks |= np.left_shift(np.uint64(1), vals[:, j].astype(np.uint64))
+                    state_groups[:, col] = np.searchsorted(keys, masks)
             cdf = np.empty(len(ids), dtype=np.float64)
             weights = self.prob[ids]
             for a, b in zip(starts, ends):
-                q = weights[a:b]; total = q.sum()
-                if total <= 0 or not np.isfinite(total): raise RuntimeError("Invalid conditional mass")
-                cdf[a:b] = np.cumsum(q / total); cdf[b-1] = 1.0
-            self.cond[k] = {"keys": uniq, "starts": starts, "ends": ends,
-                            "ids": ids, "cdf": cdf,
-                            "lookup": {int(v):i for i,v in enumerate(uniq)}}
+                q = weights[a:b]
+                total = q.sum()
+                if total <= 0 or not np.isfinite(total):
+                    raise RuntimeError("Invalid conditional mass")
+                cdf[a:b] = np.cumsum(q / total)
+                cdf[b - 1] = 1.0
+            self.cond[k] = {
+                "keys": keys, "starts": starts, "ends": ends,
+                "ids": ids, "cdf": cdf, "lookup": lookup,
+            }
+            self.subset_group_ids[k] = state_groups
         return self
 
     @staticmethod
@@ -188,7 +267,19 @@ class ConditionalPairwiseMaxEnt:
 
     def step(self, current, weights, rng):
         k = int(rng.choice(4, p=weights))
-        if k == 0: return self.draw_global(rng)
+        if k == 0:
+            return self.draw_global(rng)
+        if self.subset_group_ids is not None:
+            # A uniform subset-column draw is exactly uniform over C(K,k) subsets.
+            col = int(rng.integers(self.subset_group_ids[k].shape[1]))
+            group = int(self.subset_group_ids[k][int(current), col])
+            q = self.cond[k]
+            a, b = int(q["starts"][group]), int(q["ends"][group])
+            p = min(
+                int(np.searchsorted(q["cdf"][a:b], rng.random(), side="right")),
+                b - a - 1,
+            )
+            return int(q["ids"][a + p])
         row = self.states[current]
         keep = np.sort(rng.choice(self.K, size=k, replace=False))
         return self.draw_conditional(row[keep], rng)
