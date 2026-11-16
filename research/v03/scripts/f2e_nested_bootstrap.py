@@ -975,7 +975,11 @@ def main():
             reuse_screen = False
             if args.resume and final_screen.exists() and outer_fit_path.exists():
                 cached_fit = json.loads(outer_fit_path.read_text())
-                if cached_fit.get("theta_sha256") == theta_hash:
+                if (
+                    cached_fit.get("theta_sha256") == theta_hash
+                    and cached_fit.get("target_profile_sha256")
+                    == _array_sha256(target_prof_b)
+                ):
                     wb = np.asarray(cached_fit["selected_weights"], dtype=float)
                     frame = pd.read_csv(final_screen)
                     screenb = [{
@@ -1007,7 +1011,9 @@ def main():
             # so an interrupted inner batch can resume without repeating screening.
             save_json(outer_fit_path, {
                 "lambda_cv": cvb, "fit": mb.fit_info,
-                "theta_sha256": theta_hash, "selected_weights": wb.tolist(),
+                "theta_sha256": theta_hash,
+                "target_profile_sha256": _array_sha256(target_prof_b),
+                "selected_weights": wb.tolist(),
                 "weight_screen_file": f"outer_weight_screens/replicate_{b:04d}.csv",
             })
             outer_metrics = mine_dataset(outer_blocks)
