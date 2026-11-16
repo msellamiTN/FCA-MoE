@@ -71,6 +71,7 @@ def main():
     parser.add_argument("--screen-checkpoint-every", type=int, default=25)
     parser.add_argument("--inner-checkpoint-every", type=int, default=10)
     parser.add_argument("--outer-chunk-size", type=int, default=25)
+    parser.add_argument("--checkpoint-every", type=int, default=1)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--reuse-temporal-loo-summary",
@@ -97,6 +98,8 @@ def main():
         raise ValueError("--inner-checkpoint-every must be >= 1")
     if args.outer_chunk_size < 1:
         raise ValueError("--outer-chunk-size must be >= 1")
+    if args.checkpoint_every < 1:
+        raise ValueError("--checkpoint-every must be >= 1")
 
     root = Path(args.root).resolve()
     base = Path(args.output_base).resolve()
@@ -263,7 +266,7 @@ def main():
         "--lambdas", *[str(x) for x in args.lambdas],
         "--maxiter", str(args.maxiter),
         "--seed", str(args.seed),
-        "--checkpoint-every", "1",
+        "--checkpoint-every", str(args.checkpoint_every),
         "--screen-checkpoint-every", str(args.screen_checkpoint_every),
         "--inner-checkpoint-every", str(args.inner_checkpoint_every),
         "--outer-chunk-size", str(args.outer_chunk_size),
