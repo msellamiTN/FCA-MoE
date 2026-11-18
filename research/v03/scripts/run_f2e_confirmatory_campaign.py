@@ -59,6 +59,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True)
     parser.add_argument("--output-base", required=True)
+    parser.add_argument("--layer-id", type=int, default=0,
+                        help="0-based routed MoE layer to analyse (0..23)")
     parser.add_argument("--outer-replicates", type=int, default=999)
     parser.add_argument("--inner-replicates", type=int, default=100)
     parser.add_argument("--screen-replicates", type=int, default=8)
@@ -80,6 +82,8 @@ def main():
     )
     args = parser.parse_args()
 
+    if not 0 <= args.layer_id < 24:
+        raise ValueError("--layer-id must be in [0, 23]")
     if args.outer_replicates < 999:
         raise ValueError("Confirmatory campaign requires >= 999 outer replicates")
     if args.inner_replicates < 100:
@@ -116,6 +120,7 @@ def main():
         )
 
     expected_loo = {
+        "layer_id": int(args.layer_id),
         "lambda_candidates": list(map(float, args.lambdas)),
         "maxiter": int(args.maxiter),
         "weight_grid_step": float(args.weight_grid_step),
@@ -196,6 +201,7 @@ def main():
             screen_replicates=args.screen_replicates,
             predictive_replicates=args.predictive_replicates,
             seed=args.seed,
+            layer_id=args.layer_id,
         )
 
     loo_pass = bool(loo_result.get("predeclared_loo_diagnostic_pass") is True)
@@ -205,6 +211,8 @@ def main():
         "status": "temporal_loo_passed" if loo_pass else "stopped_temporal_loo_failed",
         "root": str(root),
         "output_base": str(base),
+        "layer_id": int(args.layer_id),
+        "routing_context": f"layer_{args.layer_id:02d}",
         "temporal_loo_summary": str(loo_summary_path),
         "temporal_loo_result": loo_result,
         "temporal_loo_reused_from_cache": reused_loo,
@@ -259,6 +267,7 @@ def main():
         "--root", str(root),
         "--output", str(bootstrap_dir),
         "--temporal-loo-summary", str(loo_summary_path),
+        "--layer-id", str(args.layer_id),
         "--outer-replicates", str(args.outer_replicates),
         "--inner-replicates", str(args.inner_replicates),
         "--screen-replicates", str(args.screen_replicates),
