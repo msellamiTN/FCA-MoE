@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Descriptive FCA scan across all routed layers of a saved Qwen MoE trace.
+"""Descriptive FCA scan across all routed layers and individual sequences.
 
 This is an exploratory, non-inferential depth scan. It reuses the exact
 multi-threshold FCA implementation and support definitions from F2-E.
@@ -20,6 +20,16 @@ import pandas as pd
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from f2e_nested_bootstrap import evaluate_context  # noqa: E402
+
+
+HO_METRICS = [
+    "pooled_higher_order_1pct",
+    "pooled_higher_order_2pct",
+    "pooled_higher_order_5pct",
+    "mean_sequence_higher_order_1pct",
+    "mean_sequence_higher_order_2pct",
+    "mean_sequence_higher_order_5pct",
+]
 
 
 def sha256_file(path: Path) -> str:
@@ -85,7 +95,6 @@ def load_layer_blocks(root: Path, layer_id: int, expected_sequences: int,
             raise ValueError(
                 f"{key}, sequence {sid!r}: each row must contain exactly {top_k} experts"
             )
-
         blocks.append(block)
 
     return blocks, [str(sid) for sid in sequence_ids]
@@ -101,7 +110,9 @@ def scan(args: argparse.Namespace) -> dict:
         )
 
     rows = []
+    by_sequence_rows = []
     sequence_ids = None
+
     for layer_id in range(args.n_layers):
         blocks, current_sequence_ids = load_layer_blocks(
             root, layer_id, args.sequences, args.sequence_length,
@@ -113,10 +124,42 @@ def scan(args: argparse.Namespace) -> dict:
             raise ValueError("Sequence alignment changed across layer loads")
 
         metrics = evaluate_context(blocks)
+
+        # Preserve each sequence's FCA profile; do not infer stability from
+        # the mean alone. evaluate_context([block]) uses the same exact
+        # F2-E support and CbO implementation for this one sequence.
+        for sequence_index, (sequence_id, block) in enumerate(
+            zip(current_sequence_ids, blocks)
+        ):
+            seq_metrics = evaluate_context([block])
+            record = {
+                "layer_id": layer_id,
+                "sequence_index": sequence_index,
+                "sequence_id": sequence_id,
+                "tokens": int(len(block)),
+                "unique_topk_states": int(len({
+                    tuple(np.flatnonzero(r).tolist()) for r in block
+                })),
+            }
+            for tag in ("1pct", "2pct", "5pct"):
+                record[f"higher_order_{tag}"] = int(
+                    seq_metrics[f"pooled_higher_order_{tag}"]
+                )
+                record[f"triplets_{tag}"] = int(
+                    seq_metrics[f"pooled_triplets_{tag}"]
+                )
+                record[f"quadruplets_{tag}"] = int(
+                    seq_metrics[f"pooled_quadruplets_{tag}"]
+                )
+            by_sequence_rows.append(record)
+
         routes = np.vstack(blocks)
         expert_loads = routes.sum(axis=0).astype(float)
         load_prob = expert_loads / expert_loads.sum()
         positive = load_prob > 0
+        route_entropy = float(
+            -np.sum(load_prob[positive] * np.log(load_prob[positive]))
+        )
 
         row = {
             "layer_id": layer_id,
@@ -126,40 +169,51 @@ def scan(args: argparse.Namespace) -> dict:
             "unique_topk_states": int(len({
                 tuple(np.flatnonzero(r).tolist()) for r in routes
             })),
-            "route_load_entropy_nats": float(
-                -np.sum(load_prob[positive] * np.log(load_prob[positive]))
-            ),
-            "route_load_entropy_normalized": float(
-                -np.sum(load_prob[positive] * np.log(load_prob[positive]))
-                / np.log(args.n_experts)
-            ),
+            "route_load_entropy_nats": route_entropy,
+            "route_load_entropy_normalized": route_entropy / np.log(args.n_experts),
             "expert_load_min": int(expert_loads.min()),
             "expert_load_max": int(expert_loads.max()),
-            "expert_load_cv": float(
-                expert_loads.std(ddof=0) / expert_loads.mean()
-            ),
+            "expert_load_cv": float(expert_loads.std(ddof=0) / expert_loads.mean()),
         }
         row.update({k: float(v) for k, v in metrics.items()})
+
+        layer_seq = pd.DataFrame([
+            r for r in by_sequence_rows if r["layer_id"] == layer_id
+        ])
+        for tag in ("1pct", "2pct", "5pct"):
+            values = layer_seq[f"higher_order_{tag}"].to_numpy(dtype=float)
+            row[f"sequence_sd_higher_order_{tag}"] = float(values.std(ddof=1))
+            row[f"sequence_min_higher_order_{tag}"] = int(values.min())
+            row[f"sequence_max_higher_order_{tag}"] = int(values.max())
+
         rows.append(row)
         print(
             f"Layer {layer_id:02d}/{args.n_layers - 1:02d}: "
             f"pooled HO@1%={row['pooled_higher_order_1pct']}, "
-            f"mean-sequence HO@1%={row['mean_sequence_higher_order_1pct']}, "
+            f"per-sequence HO@1%="
+            f"{layer_seq['higher_order_1pct'].tolist()}, "
             f"pooled HO@2%={row['pooled_higher_order_2pct']}, "
             f"pooled HO@5%={row['pooled_higher_order_5pct']}",
             flush=True,
         )
 
     frame = pd.DataFrame(rows).sort_values("layer_id")
+    sequence_frame = pd.DataFrame(by_sequence_rows).sort_values(
+        ["layer_id", "sequence_index"]
+    )
+
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     csv_path = output / "layerwise_fca_metrics.csv"
+    sequence_csv_path = output / "layerwise_fca_by_sequence.csv"
     json_path = output / "layerwise_fca_scan_summary.json"
+
     frame.to_csv(csv_path, index=False)
+    sequence_frame.to_csv(sequence_csv_path, index=False)
 
     summary = {
         "status": "completed",
-        "analysis_type": "descriptive_exploratory_layerwise_fca_scan",
+        "analysis_type": "descriptive_exploratory_layerwise_fca_scan_with_sequence_profiles",
         "inferential_status": "no_hypothesis_tests_or_p_values",
         "model": "Qwen/Qwen1.5-MoE-A2.7B",
         "dataset": "Salesforce/wikitext/wikitext-2-raw-v1:test",
@@ -181,9 +235,12 @@ def scan(args: argparse.Namespace) -> dict:
             alignment_path.name: sha256_file(alignment_path),
         },
         "results_csv": str(csv_path),
+        "per_sequence_results_csv": str(sequence_csv_path),
         "layers": rows,
+        "per_sequence": by_sequence_rows,
         "interpretation_guardrail": (
-            "Descriptive scan only. Do not interpret the largest layer, "
+            "Descriptive scan only. Four sequence profiles do not establish "
+            "population-level stability. Do not interpret the largest layer, "
             "support threshold, or metric as statistically significant. "
             "Any selected layer requires independent validation with a "
             "predeclared family-wise procedure."
@@ -191,6 +248,7 @@ def scan(args: argparse.Namespace) -> dict:
     }
     json_path.write_text(json.dumps(summary, indent=2, allow_nan=False))
     print(f"\nSaved CSV: {csv_path}")
+    print(f"Saved per-sequence CSV: {sequence_csv_path}")
     print(f"Saved summary: {json_path}")
     return summary
 
