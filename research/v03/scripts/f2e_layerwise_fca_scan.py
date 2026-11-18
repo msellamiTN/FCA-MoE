@@ -39,7 +39,9 @@ def load_layer_blocks(root: Path, layer_id: int, expected_sequences: int,
     alignment = pd.read_csv(alignment_path)
     required = {"sequence_id", "token_position"}
     if not required.issubset(alignment.columns):
-        raise ValueError(f"Alignment is missing columns: {sorted(required - set(alignment.columns))}")
+        raise ValueError(
+            f"Alignment is missing columns: {sorted(required - set(alignment.columns))}"
+        )
 
     order = alignment.sort_values(
         ["sequence_id", "token_position"], kind="stable"
@@ -76,9 +78,13 @@ def load_layer_blocks(root: Path, layer_id: int, expected_sequences: int,
                 f"Sequence {sid!r} has {len(block)} rows; expected {sequence_length}"
             )
         if not np.array_equal(token_positions, np.arange(sequence_length)):
-            raise ValueError(f"Sequence {sid!r} has missing/duplicate/out-of-order token positions")
+            raise ValueError(
+                f"Sequence {sid!r} has missing/duplicate/out-of-order token positions"
+            )
         if not np.all(block.sum(axis=1) == top_k):
-            raise ValueError(f"{key}, sequence {sid!r}: each row must contain exactly {top_k} experts")
+            raise ValueError(
+                f"{key}, sequence {sid!r}: each row must contain exactly {top_k} experts"
+            )
 
         blocks.append(block)
 
@@ -90,33 +96,47 @@ def scan(args: argparse.Namespace) -> dict:
     contexts_path = root / "qwen_contexts_by_layer.npz"
     alignment_path = root / "sequence_alignment.csv"
     if not contexts_path.exists() or not alignment_path.exists():
-        raise FileNotFoundError("Missing qwen_contexts_by_layer.npz or sequence_alignment.csv")
+        raise FileNotFoundError(
+            "Missing qwen_contexts_by_layer.npz or sequence_alignment.csv"
+        )
 
     rows = []
+    sequence_ids = None
     for layer_id in range(args.n_layers):
-        blocks, sequence_ids = load_layer_blocks(
+        blocks, current_sequence_ids = load_layer_blocks(
             root, layer_id, args.sequences, args.sequence_length,
             args.n_experts, args.top_k
         )
+        if sequence_ids is None:
+            sequence_ids = current_sequence_ids
+        elif sequence_ids != current_sequence_ids:
+            raise ValueError("Sequence alignment changed across layer loads")
+
         metrics = evaluate_context(blocks)
+        routes = np.vstack(blocks)
+        expert_loads = routes.sum(axis=0).astype(float)
+        load_prob = expert_loads / expert_loads.sum()
+        positive = load_prob > 0
+
         row = {
             "layer_id": layer_id,
             "sequence_count": len(blocks),
             "tokens_per_sequence": args.sequence_length,
-            "total_tokens": sum(len(b) for b in blocks),
+            "total_tokens": int(len(routes)),
             "unique_topk_states": int(len({
-                tuple(np.flatnonzero(r).tolist())
-                for block in blocks for r in block
+                tuple(np.flatnonzero(r).tolist()) for r in routes
             })),
-            "expert_load_entropy_nats": float(
-                -np.sum(
-                    (lambda p: p[p > 0] * np.log(p[p > 0]))(
-                        np.bincount(
-                            np.concatenate([b.argmax(axis=1) for b in blocks]),
-                            minlength=args.n_experts
-                        ) / (sum(len(b) for b in blocks))
-                    )
-                )
+            "route_load_entropy_nats": float(
+                -np.sum(load_prob[positive] * np.log(load_prob[positive]))
+            ),
+            "route_load_entropy_normalized": float(
+                -np.sum(load_prob[positive] * np.log(load_prob[positive]))
+                / np.log(args.n_experts)
+            ),
+            "expert_load_min": int(expert_loads.min()),
+            "expert_load_max": int(expert_loads.max()),
+            "expert_load_cv": float(
+                expert_loads.std(ddof=0) / expert_loads.mean()
             ),
         }
         row.update({k: float(v) for k, v in metrics.items()})
@@ -155,10 +175,7 @@ def scan(args: argparse.Namespace) -> dict:
             "Exact F2-E multi-threshold CbO counts. Higher-order means "
             "closed intents with at least three attributes."
         ),
-        "sequence_ids": load_layer_blocks(
-            root, 0, args.sequences, args.sequence_length,
-            args.n_experts, args.top_k
-        )[1],
+        "sequence_ids": sequence_ids,
         "input_sha256": {
             contexts_path.name: sha256_file(contexts_path),
             alignment_path.name: sha256_file(alignment_path),
