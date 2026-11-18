@@ -6,7 +6,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from f2e_nested_bootstrap import (
     ConditionalPairwiseMaxEnt, FCA, max_t_from_inner, FAMILY,
-    grid_weights, generate_dataset
+    grid_weights, generate_dataset, load_observed
 )
 
 
@@ -183,3 +183,46 @@ def test_conditional_gibbs_kernel_detailed_balance_on_small_state_space():
     assert np.allclose(pi @ P, pi, atol=1e-11)
     assert np.allclose(pi[:,None]*P, (pi[:,None]*P).T, atol=1e-11)
 
+
+
+def test_load_observed_selects_requested_layer(tmp_path):
+    import pandas as pd
+
+    rng = np.random.default_rng(20261119)
+    sequence_ids = np.repeat(np.arange(2), 256)
+    token_positions = np.tile(np.arange(256), 2)
+
+    def make_context(offset):
+        context = np.zeros((512, 60), dtype=np.uint8)
+        for row in range(512):
+            chosen = rng.choice(60, size=4, replace=False)
+            context[row, chosen] = 1
+        if offset:
+            context = np.roll(context, shift=offset, axis=1)
+        return context
+
+    layer_00 = make_context(0)
+    layer_11 = make_context(7)
+    np.savez_compressed(
+        tmp_path / "qwen_contexts_by_layer.npz",
+        layer_00=layer_00,
+        layer_11=layer_11,
+    )
+    pd.DataFrame({
+        "sequence_id": sequence_ids,
+        "token_position": token_positions,
+    }).to_csv(tmp_path / "sequence_alignment.csv", index=False)
+
+    blocks = load_observed(tmp_path, layer_id=11)
+    assert len(blocks) == 2
+    assert all(block.shape == (256, 60) for block in blocks)
+    assert all(np.all(block.sum(axis=1) == 4) for block in blocks)
+    assert np.array_equal(np.vstack(blocks), layer_11)
+    assert not np.array_equal(np.vstack(blocks), layer_00)
+
+
+def test_load_observed_rejects_out_of_range_layer(tmp_path):
+    import pandas as pd
+
+    with np.testing.assert_raises(ValueError):
+        load_observed(tmp_path, layer_id=24)
