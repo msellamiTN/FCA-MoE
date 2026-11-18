@@ -628,9 +628,16 @@ def max_t_from_inner(observed_metrics, inner_metrics, active_family=None):
         "statistic": "maximum_negative_log_plus_one_empirical_upper_tail_probability",
     }
 
-def load_observed(root):
+def load_observed(root, layer_id=0):
+    """Load sequence blocks from one explicit routed layer (0-based)."""
+    if not isinstance(layer_id, int) or layer_id < 0 or layer_id >= 24:
+        raise ValueError("layer_id must be an integer in [0, 23]")
     npz=root/"qwen_contexts_by_layer.npz"; align=root/"sequence_alignment.csv"
-    with np.load(npz) as z: X=z["layer_00"].astype(np.uint8)
+    key=f"layer_{layer_id:02d}"
+    with np.load(npz) as z:
+        if key not in z.files:
+            raise KeyError(f"Missing {key} in {npz}; available keys: {z.files}")
+        X=z[key].astype(np.uint8)
     a=pd.read_csv(align)
     order=a.sort_values(["sequence_id","token_position"],kind="stable").index.to_numpy()
     aa=a.iloc[order].reset_index(drop=True); ids=list(pd.unique(aa.sequence_id))
@@ -777,6 +784,8 @@ def metric_rows_frame(rows):
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root",default="/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1")
+    ap.add_argument("--layer-id", type=int, default=0,
+                    help="0-based routed MoE layer to analyse (0..23)")
     ap.add_argument("--output",default=None)
     ap.add_argument("--outer-replicates",type=int,default=20)
     ap.add_argument("--inner-replicates",type=int,default=30)
@@ -797,7 +806,11 @@ def main():
     if args.inner_replicates < 10: raise ValueError("Use at least 10 inner replicates; 100-300 recommended for final inference")
     if args.screen_replicates < 1: raise ValueError("screen-replicates must be >= 1")
     if not args.lambdas or any(x <= 0 for x in args.lambdas): raise ValueError("All lambda candidates must be positive")
-    root=Path(args.root); out=Path(args.output) if args.output else root/"sequence_replication/layer_00/temporal/f2e_nested_bootstrap"
+    if not 0 <= args.layer_id < 24:
+        raise ValueError("--layer-id must be in [0, 23]")
+    root=Path(args.root)
+    default_out=root/f"sequence_replication/layer_{args.layer_id:02d}/temporal/f2e_nested_bootstrap"
+    out=Path(args.output) if args.output else default_out
     out.mkdir(parents=True,exist_ok=True)
     contexts_path=root/"qwen_contexts_by_layer.npz"
     alignment_path=root/"sequence_alignment.csv"
@@ -825,7 +838,8 @@ def main():
             "must pass the predeclared criterion (mean held-out transition-NLL "
             "gain > 0 and selected temporal kernel better than IID in >=3/4 folds)."
         )
-    run_config={"root":str(root.resolve()),"outer_replicates":args.outer_replicates,
+    run_config={"root":str(root.resolve()),"layer_id":int(args.layer_id),
+                "outer_replicates":args.outer_replicates,
                 "inner_replicates":args.inner_replicates,"screen_replicates":args.screen_replicates,
                 "weight_grid_step":args.weight_grid_step,"lambdas":[float(x) for x in args.lambdas],
                 "maxiter":args.maxiter,"seed":args.seed,
@@ -840,7 +854,8 @@ def main():
         "dataset_config":"wikitext-2-raw-v1",
         "dataset_split":"test",
         "dataset_revision":"main",
-        "routing_context":"layer_00",
+        "routing_context":f"layer_{args.layer_id:02d}",
+        "layer_id":int(args.layer_id),
         "experts":60,"top_k":4,"sequences":4,"tokens_per_sequence":256,
         "contexts_file":{"name":contexts_path.name,"sha256":contexts_sha},
         "alignment_file":{"name":alignment_path.name,"sha256":alignment_sha},
@@ -864,7 +879,7 @@ def main():
         if args.resume and (out/"outer_bootstrap_replicates.csv").exists():
             raise RuntimeError("Cannot resume: run_config.json is missing. Start a new output directory.")
         save_json(config_path,{"fingerprint":fingerprint,"configuration":run_config})
-    blocks=load_observed(root); obs_metrics=evaluate_context(blocks)
+    blocks=load_observed(root, args.layer_id); obs_metrics=evaluate_context(blocks)
     # Empirical lag profile from observed binary Top-4 incidence matrices.
     prof=[]
     for b in blocks:
