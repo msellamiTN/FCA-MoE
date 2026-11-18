@@ -4,7 +4,7 @@
 
 F2-D tested the higher-order FCA counts conditional on one fitted layer-0 pairwise MaxEnt distribution and one selected temporal Gibbs mixture. F2-E repeats fitting and temporal-weight selection inside an outer parametric bootstrap, so the global reference distribution includes these sources of variability under the specified null family.
 
-The experiment is scoped to the existing Qwen1.5-MoE-A2.7B layer-0 trace: four 256-token sequences, 60 routed experts, exact Top-4 contexts.
+The experiment analyses one explicitly selected routed layer of the Qwen1.5-MoE-A2.7B trace (layer 0 by default): four 256-token sequences, 60 routed experts, exact Top-4 contexts. The layer ID is part of the run fingerprint and output manifest.
 
 ## Null model
 
@@ -108,6 +108,34 @@ the LOO summary only if its script hash, input hashes, lambda grid, optimizer
 settings, weight grid, screening count, predictive count, and seed match. The
 nested bootstrap independently enforces its own immutable configuration
 fingerprint.
+
+## Layer-aware execution
+
+Both `f2e_temporal_loo_validation.py` and `f2e_nested_bootstrap.py` accept
+`--layer-id 0..23`. The campaign runner also accepts this option and passes
+the same layer ID to both stages. Keep a separate output directory for every
+layer. A temporal LOO summary is reusable only when its layer ID, source hashes,
+script hash, and all selection settings match. In particular, the previous
+layer-0 LOO result must **not** be reused for layer 11.
+
+Example: run the temporal predictive prerequisite for layer 11:
+
+```bash
+python scripts/f2e_temporal_loo_validation.py \
+  --root "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1" \
+  --output "/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1/sequence_replication/layer_11/temporal/f2e_layer11_campaign_v1/temporal_loo" \
+  --layer-id 11 \
+  --lambdas 0.0003 0.001 0.003 --maxiter 400 \
+  --weight-grid-step 0.1 --screen-replicates 8 \
+  --predictive-replicates 200 --seed 20261120
+```
+
+The nested bootstrap command must then use the same `--layer-id 11` and a
+separate, layer-specific output directory. Run it only after reviewing the
+layer-11 LOO prerequisite and after freezing the inferential statistic and
+metric family. The historical inner empirical-tail max statistic has a finite
+ceiling when the inner sample is small; do not use it for a new layer-level
+confirmatory claim without resolving that calibration limitation.
 
 ## Install and validate in Colab
 
