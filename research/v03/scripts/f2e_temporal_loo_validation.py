@@ -136,8 +136,10 @@ def sha256_file(path):
 
 
 def run_validation(root, output, lambdas, maxiter, grid_step,
-                   screen_replicates, predictive_replicates, seed):
-    blocks = load_observed(root)
+                   screen_replicates, predictive_replicates, seed, layer_id=0):
+    if not isinstance(layer_id, int) or layer_id < 0 or layer_id >= 24:
+        raise ValueError("layer_id must be an integer in [0, 23]")
+    blocks = load_observed(root, layer_id=layer_id)
     if len(blocks) < 3:
         raise ValueError("At least three sequences are required for LOO validation")
 
@@ -300,6 +302,8 @@ def run_validation(root, output, lambdas, maxiter, grid_step,
 
     manifest = {
         "status": "completed",
+        "layer_id": int(layer_id),
+        "routing_context": f"layer_{layer_id:02d}",
         "purpose": "predictive temporal diagnostic; not a hypothesis test",
         "sequences": len(blocks),
         "sequence_length": int(len(blocks[0])),
@@ -338,6 +342,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--layer-id", type=int, default=0,
+                        help="0-based routed MoE layer to validate (0..23)")
     parser.add_argument("--lambdas", nargs="+", type=float,
                         default=[0.0003, 0.001, 0.003])
     parser.add_argument("--maxiter", type=int, default=400)
@@ -356,7 +362,7 @@ def main():
     _, summary = run_validation(
         Path(args.root), Path(args.output), args.lambdas, args.maxiter,
         args.weight_grid_step, args.screen_replicates,
-        args.predictive_replicates, args.seed
+        args.predictive_replicates, args.seed, layer_id=args.layer_id
     )
     summary["elapsed_seconds"] = time.time() - start
     (Path(args.output) / "loo_validation_summary.json").write_text(

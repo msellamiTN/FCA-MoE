@@ -6,7 +6,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from f2e_nested_bootstrap import (
     ConditionalPairwiseMaxEnt, FCA, max_t_from_inner, FAMILY,
-    grid_weights, generate_dataset
+    grid_weights, generate_dataset, load_observed
 )
 
 
@@ -55,6 +55,55 @@ def test_cbo_counts_match_exhaustive_closure_oracle():
             if closure_mask == mask:
                 expected[len(attrs)] += 1
         assert np.array_equal(got["by_size"], expected)
+
+
+def test_multi_threshold_fca_matches_separate_exact_mining():
+    rng = np.random.default_rng(20261116)
+    for _ in range(30):
+        n = int(rng.integers(12, 40))
+        m = int(rng.integers(4, 10))
+        X = (rng.random((n, m)) < rng.uniform(.2, .8)).astype(np.uint8)
+        supports = sorted(set([
+            max(1, int(np.ceil(.1 * n))),
+            max(1, int(np.ceil(.25 * n))),
+            max(1, int(np.ceil(.5 * n))),
+        ]))
+        combined = FCA.mine_multi_threshold(X, supports)
+        for support in supports:
+            separate = FCA.mine(X, support)
+            assert combined[support]["higher"] == separate["higher"]
+            assert combined[support]["triplets"] == int(separate["by_size"][3])
+            expected_quads = int(separate["by_size"][4]) if m >= 4 else 0
+            assert combined[support]["quadruplets"] == expected_quads
+
+
+def test_cached_state_structures_are_shared_and_subset_maps_are_exact():
+    first = ConditionalPairwiseMaxEnt(8, 3)
+    second = ConditionalPairwiseMaxEnt(8, 3)
+    assert first.states is second.states
+    assert first.state_pair is second.state_pair
+
+    rng = np.random.default_rng(91)
+    ids = rng.integers(0, len(first.states), size=200)
+    X = np.zeros((len(ids), 8), dtype=np.uint8)
+    X[np.arange(len(ids))[:, None], first.states[ids]] = 1
+    first.fit(X, lam=.03, maxiter=500).build_conditional_indexes()
+
+    for k in (1, 2, 3):
+        positions = list(itertools.combinations(range(first.K), k))
+        q = first.cond[k]
+        group_map = first.subset_group_ids[k]
+        for state_id in (0, 1, len(first.states) // 2, len(first.states) - 1):
+            for col, pos in enumerate(positions):
+                retained = first.states[state_id, list(pos)]
+                group = int(group_map[state_id, col])
+                mask = first._mask(retained)
+                assert q["lookup"][mask] == group
+                a, b = int(q["starts"][group]), int(q["ends"][group])
+                subset_states = first.states[q["ids"][a:b]]
+                # Conditional groups retain the expert set, not its old slot positions.
+                for expert in retained:
+                    assert np.all(np.any(subset_states == expert, axis=1))
 
 
 def test_weight_grid_and_max_t_retains_degenerate_metrics():
@@ -134,3 +183,46 @@ def test_conditional_gibbs_kernel_detailed_balance_on_small_state_space():
     assert np.allclose(pi @ P, pi, atol=1e-11)
     assert np.allclose(pi[:,None]*P, (pi[:,None]*P).T, atol=1e-11)
 
+
+
+def test_load_observed_selects_requested_layer(tmp_path):
+    import pandas as pd
+
+    rng = np.random.default_rng(20261119)
+    sequence_ids = np.repeat(np.arange(2), 256)
+    token_positions = np.tile(np.arange(256), 2)
+
+    def make_context(offset):
+        context = np.zeros((512, 60), dtype=np.uint8)
+        for row in range(512):
+            chosen = rng.choice(60, size=4, replace=False)
+            context[row, chosen] = 1
+        if offset:
+            context = np.roll(context, shift=offset, axis=1)
+        return context
+
+    layer_00 = make_context(0)
+    layer_11 = make_context(7)
+    np.savez_compressed(
+        tmp_path / "qwen_contexts_by_layer.npz",
+        layer_00=layer_00,
+        layer_11=layer_11,
+    )
+    pd.DataFrame({
+        "sequence_id": sequence_ids,
+        "token_position": token_positions,
+    }).to_csv(tmp_path / "sequence_alignment.csv", index=False)
+
+    blocks = load_observed(tmp_path, layer_id=11)
+    assert len(blocks) == 2
+    assert all(block.shape == (256, 60) for block in blocks)
+    assert all(np.all(block.sum(axis=1) == 4) for block in blocks)
+    assert np.array_equal(np.vstack(blocks), layer_11)
+    assert not np.array_equal(np.vstack(blocks), layer_00)
+
+
+def test_load_observed_rejects_out_of_range_layer(tmp_path):
+    import pandas as pd
+
+    with np.testing.assert_raises(ValueError):
+        load_observed(tmp_path, layer_id=24)

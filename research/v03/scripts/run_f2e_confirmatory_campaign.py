@@ -59,6 +59,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True)
     parser.add_argument("--output-base", required=True)
+    parser.add_argument("--layer-id", type=int, default=0,
+                        help="0-based routed MoE layer to analyse (0..23)")
     parser.add_argument("--outer-replicates", type=int, default=999)
     parser.add_argument("--inner-replicates", type=int, default=100)
     parser.add_argument("--screen-replicates", type=int, default=8)
@@ -68,9 +70,20 @@ def main():
     parser.add_argument("--maxiter", type=int, default=400)
     parser.add_argument("--predictive-replicates", type=int, default=200)
     parser.add_argument("--seed", type=int, default=20261120)
+    parser.add_argument("--screen-checkpoint-every", type=int, default=25)
+    parser.add_argument("--inner-checkpoint-every", type=int, default=10)
+    parser.add_argument("--outer-chunk-size", type=int, default=25)
+    parser.add_argument("--checkpoint-every", type=int, default=1)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--reuse-temporal-loo-summary",
+        default=None,
+        help="Reuse a completed, hash/configuration-matched temporal LOO summary from another campaign directory.",
+    )
     args = parser.parse_args()
 
+    if not 0 <= args.layer_id < 24:
+        raise ValueError("--layer-id must be in [0, 23]")
     if args.outer_replicates < 999:
         raise ValueError("Confirmatory campaign requires >= 999 outer replicates")
     if args.inner_replicates < 100:
@@ -83,6 +96,14 @@ def main():
         raise ValueError("Provide at least three positive lambda candidates")
     if args.predictive_replicates < 100:
         raise ValueError("Use at least 100 LOO predictive replicates")
+    if args.screen_checkpoint_every < 1:
+        raise ValueError("--screen-checkpoint-every must be >= 1")
+    if args.inner_checkpoint_every < 1:
+        raise ValueError("--inner-checkpoint-every must be >= 1")
+    if args.outer_chunk_size < 1:
+        raise ValueError("--outer-chunk-size must be >= 1")
+    if args.checkpoint_every < 1:
+        raise ValueError("--checkpoint-every must be >= 1")
 
     root = Path(args.root).resolve()
     base = Path(args.output_base).resolve()
@@ -99,6 +120,7 @@ def main():
         )
 
     expected_loo = {
+        "layer_id": int(args.layer_id),
         "lambda_candidates": list(map(float, args.lambdas)),
         "maxiter": int(args.maxiter),
         "weight_grid_step": float(args.weight_grid_step),
@@ -120,6 +142,10 @@ def main():
     reused_loo = False
     loo_result = None
 
+    cached_loo_path = (
+        Path(args.reuse_temporal_loo_summary).resolve()
+        if args.reuse_temporal_loo_summary else loo_summary_path
+    )
     if args.resume and loo_summary_path.exists():
         cached = json.loads(loo_summary_path.read_text())
         mismatches = {
@@ -138,6 +164,32 @@ def main():
         loo_result = cached
         reused_loo = True
         print("Reusing hash- and configuration-matched temporal LOO result.", flush=True)
+    elif args.reuse_temporal_loo_summary:
+        if not cached_loo_path.exists():
+            raise FileNotFoundError(
+                f"Requested reusable LOO summary does not exist: {cached_loo_path}"
+            )
+        cached = json.loads(cached_loo_path.read_text())
+        mismatches = {
+            key: {"cached": cached.get(key), "expected": value}
+            for key, value in expected_loo.items()
+            if cached.get(key) != value
+        }
+        if mismatches:
+            raise RuntimeError(
+                "Cannot reuse temporal LOO summary: its code/data/configuration "
+                f"does not match this campaign: {json.dumps(mismatches)}"
+            )
+        if cached.get("status") != "completed":
+            raise RuntimeError("Reusable temporal LOO summary is not complete")
+        loo_dir.mkdir(parents=True, exist_ok=True)
+        save_json(loo_summary_path, cached)
+        loo_result = cached
+        reused_loo = True
+        print(
+            "Reusing external hash- and configuration-matched temporal LOO result.",
+            flush=True,
+        )
     else:
         loo_dir.mkdir(parents=True, exist_ok=True)
         _, loo_result = loo.run_validation(
@@ -149,6 +201,7 @@ def main():
             screen_replicates=args.screen_replicates,
             predictive_replicates=args.predictive_replicates,
             seed=args.seed,
+            layer_id=args.layer_id,
         )
 
     loo_pass = bool(loo_result.get("predeclared_loo_diagnostic_pass") is True)
@@ -158,6 +211,8 @@ def main():
         "status": "temporal_loo_passed" if loo_pass else "stopped_temporal_loo_failed",
         "root": str(root),
         "output_base": str(base),
+        "layer_id": int(args.layer_id),
+        "routing_context": f"layer_{args.layer_id:02d}",
         "temporal_loo_summary": str(loo_summary_path),
         "temporal_loo_result": loo_result,
         "temporal_loo_reused_from_cache": reused_loo,
@@ -180,13 +235,39 @@ def main():
         )
         raise SystemExit(2)
 
-    # Invoke the existing F2-E CLI in-process so its normal validation,
-    # fingerprinting, checkpoints, and output files remain authoritative.
+    save_json(campaign_manifest, {
+        "git_commit_sha": git_commit_sha(),
+        "stage": "nested_bootstrap_running",
+        "status": "running",
+        "root": str(root),
+        "output_base": str(base),
+        "temporal_loo_summary": str(loo_summary_path),
+        "temporal_loo_result": loo_result,
+        "temporal_loo_reused_from_cache": reused_loo,
+        "nested_bootstrap_output": str(bootstrap_dir),
+        "confirmatory_configuration": {
+            "outer_replicates": args.outer_replicates,
+            "inner_replicates": args.inner_replicates,
+            "screen_replicates": args.screen_replicates,
+            "weight_grid_step": args.weight_grid_step,
+            "lambdas": list(map(float, args.lambdas)),
+            "maxiter": args.maxiter,
+            "seed": args.seed,
+        },
+    })
+    print(
+        f"Launching nested bootstrap; output directory: {bootstrap_dir}",
+        flush=True,
+    )
+
+    # Invoke the F2-E CLI in-process so its validation, fingerprinting,
+    # resumable checkpoints, and output files remain authoritative.
     argv = [
         "f2e_nested_bootstrap.py",
         "--root", str(root),
         "--output", str(bootstrap_dir),
         "--temporal-loo-summary", str(loo_summary_path),
+        "--layer-id", str(args.layer_id),
         "--outer-replicates", str(args.outer_replicates),
         "--inner-replicates", str(args.inner_replicates),
         "--screen-replicates", str(args.screen_replicates),
@@ -194,7 +275,10 @@ def main():
         "--lambdas", *[str(x) for x in args.lambdas],
         "--maxiter", str(args.maxiter),
         "--seed", str(args.seed),
-        "--checkpoint-every", "1",
+        "--checkpoint-every", str(args.checkpoint_every),
+        "--screen-checkpoint-every", str(args.screen_checkpoint_every),
+        "--inner-checkpoint-every", str(args.inner_checkpoint_every),
+        "--outer-chunk-size", str(args.outer_chunk_size),
     ]
     if args.resume:
         argv.append("--resume")

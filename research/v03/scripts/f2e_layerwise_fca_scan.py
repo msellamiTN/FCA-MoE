@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""Descriptive FCA scan across all routed layers and individual sequences.
+
+This is an exploratory, non-inferential depth scan. It reuses the exact
+multi-threshold FCA implementation and support definitions from F2-E.
+No null simulations, p-values, layer selection, or significance claims
+are produced by this script.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from f2e_nested_bootstrap import evaluate_context  # noqa: E402
+
+
+HO_METRICS = [
+    "pooled_higher_order_1pct",
+    "pooled_higher_order_2pct",
+    "pooled_higher_order_5pct",
+    "mean_sequence_higher_order_1pct",
+    "mean_sequence_higher_order_2pct",
+    "mean_sequence_higher_order_5pct",
+]
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_layer_blocks(root: Path, layer_id: int, expected_sequences: int,
+                      sequence_length: int, n_experts: int,
+                      top_k: int) -> tuple[list[np.ndarray], list[str]]:
+    contexts_path = root / "qwen_contexts_by_layer.npz"
+    alignment_path = root / "sequence_alignment.csv"
+
+    alignment = pd.read_csv(alignment_path)
+    required = {"sequence_id", "token_position"}
+    if not required.issubset(alignment.columns):
+        raise ValueError(
+            f"Alignment is missing columns: {sorted(required - set(alignment.columns))}"
+        )
+
+    order = alignment.sort_values(
+        ["sequence_id", "token_position"], kind="stable"
+    ).index.to_numpy()
+    aligned = alignment.iloc[order].reset_index(drop=True)
+    sequence_ids = list(pd.unique(aligned["sequence_id"]))
+
+    if len(sequence_ids) != expected_sequences:
+        raise ValueError(
+            f"Expected {expected_sequences} sequences, found {len(sequence_ids)}"
+        )
+
+    with np.load(contexts_path) as archive:
+        key = f"layer_{layer_id:02d}"
+        if key not in archive.files:
+            raise KeyError(f"Missing {key}; available keys: {archive.files}")
+        X = archive[key].astype(np.uint8)
+
+    if X.shape != (len(alignment), n_experts):
+        raise ValueError(
+            f"{key} shape {X.shape}; expected ({len(alignment)}, {n_experts})"
+        )
+    if not np.isin(X, [0, 1]).all():
+        raise ValueError(f"{key} contains non-binary values")
+
+    blocks = []
+    for sid in sequence_ids:
+        positions = np.flatnonzero(aligned["sequence_id"].to_numpy() == sid)
+        block = X[order[positions]]
+        token_positions = aligned.iloc[positions]["token_position"].to_numpy(dtype=int)
+
+        if len(block) != sequence_length:
+            raise ValueError(
+                f"Sequence {sid!r} has {len(block)} rows; expected {sequence_length}"
+            )
+        if not np.array_equal(token_positions, np.arange(sequence_length)):
+            raise ValueError(
+                f"Sequence {sid!r} has missing/duplicate/out-of-order token positions"
+            )
+        if not np.all(block.sum(axis=1) == top_k):
+            raise ValueError(
+                f"{key}, sequence {sid!r}: each row must contain exactly {top_k} experts"
+            )
+        blocks.append(block)
+
+    return blocks, [str(sid) for sid in sequence_ids]
+
+
+def scan(args: argparse.Namespace) -> dict:
+    root = Path(args.root)
+    contexts_path = root / "qwen_contexts_by_layer.npz"
+    alignment_path = root / "sequence_alignment.csv"
+    if not contexts_path.exists() or not alignment_path.exists():
+        raise FileNotFoundError(
+            "Missing qwen_contexts_by_layer.npz or sequence_alignment.csv"
+        )
+
+    rows = []
+    by_sequence_rows = []
+    sequence_ids = None
+
+    for layer_id in range(args.n_layers):
+        blocks, current_sequence_ids = load_layer_blocks(
+            root, layer_id, args.sequences, args.sequence_length,
+            args.n_experts, args.top_k
+        )
+        if sequence_ids is None:
+            sequence_ids = current_sequence_ids
+        elif sequence_ids != current_sequence_ids:
+            raise ValueError("Sequence alignment changed across layer loads")
+
+        metrics = evaluate_context(blocks)
+
+        # Preserve each sequence's FCA profile; do not infer stability from
+        # the mean alone. evaluate_context([block]) uses the same exact
+        # F2-E support and CbO implementation for this one sequence.
+        for sequence_index, (sequence_id, block) in enumerate(
+            zip(current_sequence_ids, blocks)
+        ):
+            seq_metrics = evaluate_context([block])
+            record = {
+                "layer_id": layer_id,
+                "sequence_index": sequence_index,
+                "sequence_id": sequence_id,
+                "tokens": int(len(block)),
+                "unique_topk_states": int(len({
+                    tuple(np.flatnonzero(r).tolist()) for r in block
+                })),
+            }
+            for tag in ("1pct", "2pct", "5pct"):
+                record[f"higher_order_{tag}"] = int(
+                    seq_metrics[f"pooled_higher_order_{tag}"]
+                )
+                record[f"triplets_{tag}"] = int(
+                    seq_metrics[f"pooled_triplets_{tag}"]
+                )
+                record[f"quadruplets_{tag}"] = int(
+                    seq_metrics[f"pooled_quadruplets_{tag}"]
+                )
+            by_sequence_rows.append(record)
+
+        routes = np.vstack(blocks)
+        expert_loads = routes.sum(axis=0).astype(float)
+        load_prob = expert_loads / expert_loads.sum()
+        positive = load_prob > 0
+        route_entropy = float(
+            -np.sum(load_prob[positive] * np.log(load_prob[positive]))
+        )
+
+        row = {
+            "layer_id": layer_id,
+            "sequence_count": len(blocks),
+            "tokens_per_sequence": args.sequence_length,
+            "total_tokens": int(len(routes)),
+            "unique_topk_states": int(len({
+                tuple(np.flatnonzero(r).tolist()) for r in routes
+            })),
+            "route_load_entropy_nats": route_entropy,
+            "route_load_entropy_normalized": route_entropy / np.log(args.n_experts),
+            "expert_load_min": int(expert_loads.min()),
+            "expert_load_max": int(expert_loads.max()),
+            "expert_load_cv": float(expert_loads.std(ddof=0) / expert_loads.mean()),
+        }
+        row.update({k: float(v) for k, v in metrics.items()})
+
+        layer_seq = pd.DataFrame([
+            r for r in by_sequence_rows if r["layer_id"] == layer_id
+        ])
+        for tag in ("1pct", "2pct", "5pct"):
+            values = layer_seq[f"higher_order_{tag}"].to_numpy(dtype=float)
+            row[f"sequence_sd_higher_order_{tag}"] = float(values.std(ddof=1))
+            row[f"sequence_min_higher_order_{tag}"] = int(values.min())
+            row[f"sequence_max_higher_order_{tag}"] = int(values.max())
+
+        rows.append(row)
+        print(
+            f"Layer {layer_id:02d}/{args.n_layers - 1:02d}: "
+            f"pooled HO@1%={row['pooled_higher_order_1pct']}, "
+            f"per-sequence HO@1%="
+            f"{layer_seq['higher_order_1pct'].tolist()}, "
+            f"pooled HO@2%={row['pooled_higher_order_2pct']}, "
+            f"pooled HO@5%={row['pooled_higher_order_5pct']}",
+            flush=True,
+        )
+
+    frame = pd.DataFrame(rows).sort_values("layer_id")
+    sequence_frame = pd.DataFrame(by_sequence_rows).sort_values(
+        ["layer_id", "sequence_index"]
+    )
+
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    csv_path = output / "layerwise_fca_metrics.csv"
+    sequence_csv_path = output / "layerwise_fca_by_sequence.csv"
+    json_path = output / "layerwise_fca_scan_summary.json"
+
+    frame.to_csv(csv_path, index=False)
+    sequence_frame.to_csv(sequence_csv_path, index=False)
+
+    summary = {
+        "status": "completed",
+        "analysis_type": "descriptive_exploratory_layerwise_fca_scan_with_sequence_profiles",
+        "inferential_status": "no_hypothesis_tests_or_p_values",
+        "model": "Qwen/Qwen1.5-MoE-A2.7B",
+        "dataset": "Salesforce/wikitext/wikitext-2-raw-v1:test",
+        "routing": {
+            "layers": args.n_layers,
+            "experts": args.n_experts,
+            "top_k": args.top_k,
+            "sequences": args.sequences,
+            "tokens_per_sequence": args.sequence_length,
+        },
+        "support_fractions": [0.01, 0.02, 0.05],
+        "metric_definition": (
+            "Exact F2-E multi-threshold CbO counts. Higher-order means "
+            "closed intents with at least three attributes."
+        ),
+        "sequence_ids": sequence_ids,
+        "input_sha256": {
+            contexts_path.name: sha256_file(contexts_path),
+            alignment_path.name: sha256_file(alignment_path),
+        },
+        "results_csv": str(csv_path),
+        "per_sequence_results_csv": str(sequence_csv_path),
+        "layers": rows,
+        "per_sequence": by_sequence_rows,
+        "interpretation_guardrail": (
+            "Descriptive scan only. Four sequence profiles do not establish "
+            "population-level stability. Do not interpret the largest layer, "
+            "support threshold, or metric as statistically significant. "
+            "Any selected layer requires independent validation with a "
+            "predeclared family-wise procedure."
+        ),
+    }
+    json_path.write_text(json.dumps(summary, indent=2, allow_nan=False))
+    print(f"\nSaved CSV: {csv_path}")
+    print(f"Saved per-sequence CSV: {sequence_csv_path}")
+    print(f"Saved summary: {json_path}")
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--root",
+        default="/content/drive/MyDrive/FCA_MoE_v03/qwen15_moe_a27_wikitext_test/contexts_v1",
+    )
+    parser.add_argument("--output", default=None)
+    parser.add_argument("--n-layers", type=int, default=24)
+    parser.add_argument("--n-experts", type=int, default=60)
+    parser.add_argument("--top-k", type=int, default=4)
+    parser.add_argument("--sequences", type=int, default=4)
+    parser.add_argument("--sequence-length", type=int, default=256)
+    args = parser.parse_args()
+    if args.output is None:
+        args.output = str(
+            Path(args.root) / "sequence_replication/layerwise_fca_scan_v1"
+        )
+    scan(args)
+
+
+if __name__ == "__main__":
+    main()
