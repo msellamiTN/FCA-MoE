@@ -102,16 +102,21 @@ def test_supported_higher_order_intents_match_exhaustive_oracle():
 
 def test_cross_validated_alignment_is_evaluated_on_heldout_sequences():
     rng = np.random.default_rng(20261118)
-    n_sequences, n_tokens, n_experts, top_k = 4, 96, 10, 2
-    true_mapping = np.array([3, 8, 1, 5, 0, 9, 4, 2, 7, 6])
+    n_sequences, n_tokens, n_experts, top_k = 4, 96, 12, 4
+    true_mapping = np.array([3, 8, 1, 5, 0, 9, 4, 2, 7, 6, 11, 10])
 
     source_blocks = []
     target_blocks = []
     for _ in range(n_sequences):
         source = np.zeros((n_tokens, n_experts), dtype=np.uint8)
-        for t in range(n_tokens):
+        # A recurring closed triple, with a varying fourth expert so the
+        # triple remains the shared intent rather than closing to a quadruple.
+        for t in range(30):
+            source[t, [0, 1, 2, 3 + (t % (n_experts - 3))]] = 1
+        for t in range(30, n_tokens):
             selected = rng.choice(n_experts, size=top_k, replace=False)
             source[t, selected] = 1
+
         target = np.zeros_like(source)
         for t, row in enumerate(source):
             target[t, true_mapping[np.flatnonzero(row)]] = 1
@@ -139,7 +144,9 @@ def test_cross_validated_alignment_is_evaluated_on_heldout_sequences():
     for fold in folds:
         mapping = np.asarray(__import__("json").loads(fold["mapping"]))
         assert np.array_equal(mapping, true_mapping)
+        assert fold["source_train_universal_tuple_count"] > 0
         assert fold["exact_transport_rate"] is not None
+        assert fold["exact_transport_count"] > 0
 
 
 def test_training_phi_is_centered_within_sequence_to_remove_sequence_confounding():
