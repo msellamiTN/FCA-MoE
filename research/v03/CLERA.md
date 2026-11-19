@@ -48,7 +48,11 @@ A one-to-one assignment pi is estimated by the Hungarian algorithm:
 pi* = argmax_pi sum_i phi(i, pi(i))
 ```
 
-The assignment is learned using three sequences only.
+For the three training sequences, each sequence is centered separately before
+cross-products and sums of squares are accumulated. This pooled within-sequence
+phi estimator avoids spurious matching caused solely by sequence-specific
+expert prevalence differences. The assignment is learned using three
+sequences only.
 
 ## Held-out validation
 
