@@ -190,3 +190,17 @@ def test_positional_closure_mapping_is_weakly_monotone():
         target_intents=target_intents,
     )
     assert result["weak_intent_inclusion_preservation_rate"] == 1.0
+
+
+def test_order_reflection_rate_is_not_reported_as_violation_rate():
+    # Two incomparable source intents collapse to the same target closure.
+    target_context = np.array([[1, 1]], dtype=np.uint8)
+    result = closure_mapping_audit(
+        [frozenset({0}), frozenset({1})],
+        target_context,
+        [0, 1],
+        min_support=1,
+        target_intents=[frozenset({0, 1})],
+    )
+    assert result["order_reflection_rate"] == 0.0
+    assert result["n_collapsed_source_pairs"] == 1
