@@ -13,6 +13,7 @@ from clera_cross_layer_alignment import (  # noqa: E402
     cross_validate_pair,
     extract_supported_higher_order_intents,
     hungarian_mapping,
+    phi_similarity_blocks,
     mapped_topk_overlap,
     phi_similarity,
     score_mapping,
@@ -139,3 +140,35 @@ def test_cross_validated_alignment_is_evaluated_on_heldout_sequences():
         mapping = np.asarray(__import__("json").loads(fold["mapping"]))
         assert np.array_equal(mapping, true_mapping)
         assert fold["exact_transport_rate"] is not None
+
+
+def test_training_phi_is_centered_within_sequence_to_remove_sequence_confounding():
+    # Within each sequence, A and B have exactly independent 2x2 counts.
+    # Their marginal prevalence changes together between sequences, which
+    # would create a spurious pooled correlation if rows were simply stacked.
+    def independent_binary_block(n11, n10, n01, n00):
+        a = np.array(
+            [1] * (n11 + n10) + [0] * (n01 + n00),
+            dtype=np.uint8
+        )
+        b = np.array(
+            [1] * n11 + [0] * n10 + [1] * n01 + [0] * n00,
+            dtype=np.uint8
+        )
+        return np.column_stack([a, b])
+
+    source_1 = independent_binary_block(64, 16, 16, 4)[:, [0]]
+    target_1 = independent_binary_block(64, 16, 16, 4)[:, [1]]
+    source_2 = independent_binary_block(4, 16, 16, 64)[:, [0]]
+    target_2 = independent_binary_block(4, 16, 16, 64)[:, [1]]
+
+    pooled = phi_similarity(
+        np.vstack([source_1, source_2]),
+        np.vstack([target_1, target_2])
+    )[0, 0]
+    within = phi_similarity_blocks(
+        [source_1, source_2], [target_1, target_2]
+    )[0, 0]
+
+    assert pooled > 0.2
+    assert abs(within) < 1e-12
