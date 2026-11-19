@@ -50,16 +50,16 @@ def load_layer_blocks(
         key = f"layer_{layer_id:02d}"
         if key not in archive.files:
             raise KeyError(f"Missing {key}; available layers: {archive.files}")
-        matrix = archive[key].astype(np.uint8)
+        raw_matrix = archive[key]
+        if not np.isin(raw_matrix, [0, 1]).all():
+            raise ValueError(f"{key} is not a binary routing matrix")
+        matrix = raw_matrix.astype(np.uint8)
 
     alignment = pd.read_csv(root / "sequence_alignment.csv")
     if matrix.shape != (len(alignment), n_experts):
         raise ValueError(
             f"{key} has shape {matrix.shape}; expected ({len(alignment)}, {n_experts})"
         )
-    if not np.isin(matrix, [0, 1]).all():
-        raise ValueError(f"{key} is not a binary routing matrix")
-
     sorted_alignment = alignment.iloc[order].reset_index(drop=True)
     blocks: list[np.ndarray] = []
     for sid in sequence_ids:
@@ -588,12 +588,19 @@ def run(args: argparse.Namespace) -> dict:
                 "cognate_jaccard_ge_0_5_rate": fold["cognate_jaccard_ge_0_5_rate"],
                 "mapping": fold["mapping"],
             }]))
+        tuple_rates = [
+            row["exact_transport_rate"] for row in folds
+            if row["exact_transport_rate"] is not None
+        ]
+        tuple_rate_label = (
+            f"{np.mean(tuple_rates):.3f}" if tuple_rates else "n/a"
+        )
         print(
             f"Layer {args.source_layer}->{target_layer}: "
             f"held-out mean phi={summary['matched_phi_mean']:.5f}, "
             f"mapped Top-K overlap={summary['mapped_topk_overlap_mean']:.5f}, "
             f"mean mapping agreement={summary['mean_mapping_pairwise_agreement']:.3f}, "
-            f"tuple exact transport={np.nanmean([x['exact_transport_rate'] for x in folds]):.3f}",
+            f"tuple exact transport={tuple_rate_label}",
             flush=True,
         )
 
