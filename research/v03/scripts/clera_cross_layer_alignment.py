@@ -113,6 +113,43 @@ def phi_similarity(source: np.ndarray, target: np.ndarray) -> np.ndarray:
     return np.clip(result, -1.0, 1.0)
 
 
+def phi_similarity_blocks(
+    source_blocks: list[np.ndarray], target_blocks: list[np.ndarray]
+) -> np.ndarray:
+    """Pooled within-sequence phi matrix.
+
+    Each sequence is centered separately before accumulating cross-products.
+    This prevents sequence-specific expert prevalence differences from
+    generating spurious correspondence when training sequences are stacked.
+    """
+    if len(source_blocks) != len(target_blocks) or not source_blocks:
+        raise ValueError("Provide equally many non-empty source/target blocks")
+    n_experts = source_blocks[0].shape[1]
+    numerator = np.zeros((n_experts, n_experts), dtype=float)
+    source_ss = np.zeros(n_experts, dtype=float)
+    target_ss = np.zeros(n_experts, dtype=float)
+
+    for source, target in zip(source_blocks, target_blocks):
+        a = np.asarray(source, dtype=float)
+        b = np.asarray(target, dtype=float)
+        if a.ndim != 2 or b.ndim != 2 or a.shape[0] != b.shape[0]:
+            raise ValueError("Each paired block must be 2-D and token-aligned")
+        if a.shape[1] != n_experts or b.shape[1] != n_experts:
+            raise ValueError("All blocks must use the same expert count")
+        if not np.isin(a, [0, 1]).all() or not np.isin(b, [0, 1]).all():
+            raise ValueError("Expert profiles must be binary")
+        ac = a - a.mean(axis=0, keepdims=True)
+        bc = b - b.mean(axis=0, keepdims=True)
+        numerator += ac.T @ bc
+        source_ss += np.sum(ac * ac, axis=0)
+        target_ss += np.sum(bc * bc, axis=0)
+
+    denominator = np.sqrt(source_ss[:, None] * target_ss[None, :])
+    result = np.zeros_like(numerator)
+    np.divide(numerator, denominator, out=result, where=denominator > 0)
+    return np.clip(result, -1.0, 1.0)
+
+
 def hungarian_mapping(similarity: np.ndarray) -> np.ndarray:
     """Return mapping[source_expert] = target_expert maximizing total phi."""
     matrix = np.asarray(similarity, dtype=float)
@@ -306,9 +343,9 @@ def cross_validate_pair(
 
     for held_out in range(n_sequences):
         train_indices = [i for i in range(n_sequences) if i != held_out]
-        source_train = np.vstack([source_blocks[i] for i in train_indices])
-        target_train = np.vstack([target_blocks[i] for i in train_indices])
-        similarity_train = phi_similarity(source_train, target_train)
+        source_train = [source_blocks[i] for i in train_indices]
+        target_train = [target_blocks[i] for i in train_indices]
+        similarity_train = phi_similarity_blocks(source_train, target_train)
         mapping = hungarian_mapping(similarity_train)
         mappings.append(mapping)
 
@@ -375,9 +412,9 @@ def cross_validate_alignment_only(
     fold_scores = []
     for held_out in range(len(source_blocks)):
         train_indices = [i for i in range(len(source_blocks)) if i != held_out]
-        source_train = np.vstack([source_blocks[i] for i in train_indices])
-        target_train = np.vstack([target_blocks[i] for i in train_indices])
-        mapping = hungarian_mapping(phi_similarity(source_train, target_train))
+        source_train = [source_blocks[i] for i in train_indices]
+        target_train = [target_blocks[i] for i in train_indices]
+        mapping = hungarian_mapping(phi_similarity_blocks(source_train, target_train))
         fold_scores.append(score_mapping(
             source_blocks[held_out], target_blocks[held_out], mapping
         ))
