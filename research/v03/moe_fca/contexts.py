@@ -35,6 +35,54 @@ def window_context(routes: np.ndarray, window_size: int, threshold: float,
     freq = x[:n_windows * window_size].reshape(n_windows, window_size, n_experts).mean(axis=1)
     return (freq >= threshold).astype(np.uint8)
 
+def positional_attribute_labels(window_size: int, n_experts: int = 32) -> list[tuple[int, int]]:
+    """Attribute labels in expert-major order: index = expert * window_size + offset."""
+    if window_size <= 0 or n_experts <= 0:
+        raise ValueError("window_size and n_experts must be positive")
+    return [
+        (expert, offset)
+        for expert in range(n_experts)
+        for offset in range(window_size)
+    ]
+
+def positional_window_context(
+    routes: np.ndarray,
+    window_size: int,
+    n_experts: int = 32,
+    stride: int = 1,
+) -> np.ndarray:
+    """Sliding-window × (expert, relative-position) binary formal context.
+
+    Each row represents one complete contiguous token window. Attribute
+    (expert, offset) is present when that expert is routed at that relative
+    position. Attributes are expert-major: expert * window_size + offset.
+    The caller must pass one sequence at a time; windows never cross sequence
+    boundaries. Each row has exactly window_size * Top-K incidences.
+    """
+    if window_size <= 0:
+        raise ValueError("window_size must be positive")
+    if stride <= 0:
+        raise ValueError("stride must be positive")
+    x = validate_routes(routes, n_experts=n_experts)
+    if len(x) < window_size:
+        raise ValueError("not enough tokens for one complete window")
+
+    starts = range(0, len(x) - window_size + 1, stride)
+    n_windows = 1 + (len(x) - window_size) // stride
+    top_k = x.shape[1]
+    out = np.zeros((n_windows, n_experts * window_size), dtype=np.uint8)
+
+    for window_id, start in enumerate(starts):
+        for offset in range(window_size):
+            experts = x[start + offset]
+            columns = experts * window_size + offset
+            out[window_id, columns] = 1
+
+    expected = window_size * top_k
+    if not np.all(out.sum(axis=1) == expected):
+        raise AssertionError("positional context violated the expected incidence count")
+    return out
+
 def chronological_split(data: np.ndarray, train=.60, validation=.20):
     """Chronological 60/20/20 split; no shuffling."""
     if not (0 < train < 1 and 0 < validation < 1 and train + validation < 1):
