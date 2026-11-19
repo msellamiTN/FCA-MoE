@@ -247,7 +247,7 @@ def tuple_transport_diagnostics(
     if not source_universal:
         return {
             "source_train_universal_tuple_count": 0,
-            "target_test_higher_order_intue_count": len(target_test_intents),
+            "target_test_higher_order_tuple_count": len(target_test_intents),
             "exact_transport_count": 0,
             "exact_transport_rate": None,
             "mean_best_jaccard": None,
@@ -365,6 +365,32 @@ def cross_validate_pair(
     return summary, fold_records
 
 
+def cross_validate_alignment_only(
+    source_blocks: list[np.ndarray],
+    target_blocks: list[np.ndarray],
+) -> dict:
+    """LOSO routing-alignment scores only; avoids FCA mining in null loops."""
+    if len(source_blocks) != len(target_blocks) or len(source_blocks) < 3:
+        raise ValueError("At least three paired sequences are required")
+    fold_scores = []
+    for held_out in range(len(source_blocks)):
+        train_indices = [i for i in range(len(source_blocks)) if i != held_out]
+        source_train = np.vstack([source_blocks[i] for i in train_indices])
+        target_train = np.vstack([target_blocks[i] for i in train_indices])
+        mapping = hungarian_mapping(phi_similarity(source_train, target_train))
+        fold_scores.append(score_mapping(
+            source_blocks[held_out], target_blocks[held_out], mapping
+        ))
+    return {
+        "matched_phi_mean": float(np.mean([
+            row["matched_phi_mean"] for row in fold_scores
+        ])),
+        "mapped_topk_overlap_mean": float(np.mean([
+            row["mapped_topk_overlap"] for row in fold_scores
+        ])),
+    }
+
+
 def shifted_blocks(
     blocks: list[np.ndarray], rng: np.random.Generator
 ) -> list[np.ndarray]:
@@ -393,9 +419,7 @@ def permutation_calibration(
     for replicate in range(permutations):
         for col, target_layer in enumerate(target_layers):
             shifted = shifted_blocks(targets[target_layer], rng)
-            scores, _ = cross_validate_pair(
-                source_blocks, shifted, min_support=3
-            )
+            scores = cross_validate_alignment_only(source_blocks, shifted)
             null_phi[replicate, col] = scores["matched_phi_mean"]
             null_overlap[replicate, col] = scores["mapped_topk_overlap_mean"]
 
